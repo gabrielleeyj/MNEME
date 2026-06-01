@@ -12,7 +12,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from mneme.domain.events import Actor, Event, EventType
-from mneme.facts.llm_extractor import LLMExtractor
+from mneme.facts.llm_extractor import ExtractionError, LLMExtractor
 from mneme.llm.client import AnthropicClient
 
 SAMPLES: list[tuple[str, str]] = [
@@ -39,7 +39,11 @@ def main() -> None:
     for idx, (actor, content) in enumerate(SAMPLES):
         event = _event(idx, actor, content)
         print(f"\n[{event.ts.date()}] {actor}: {content}")
-        facts = extractor.extract(event)
+        try:
+            facts = extractor.extract(event)
+        except ExtractionError as exc:
+            print(f"  !! extraction error: {exc}")
+            continue
         if not facts:
             print("  (no facts)")
         for fact in facts:

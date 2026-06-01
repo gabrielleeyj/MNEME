@@ -5,14 +5,20 @@ prompting an ``LLMClient`` and parsing its JSON. Implements the ``Extractor``
 protocol, so it drops straight into ``FactStore.rebuild`` and every baseline —
 one extractor shared everywhere keeps the comparison honest.
 
-The response is untrusted external data, so parsing validates strictly and
-raises ``ExtractionError`` with the offending payload rather than silently
-dropping or guessing. That visibility is what makes prompt-tuning tractable.
+The response is untrusted external data. The *required* triple
+(subject/predicate/object) is validated strictly: a malformed or empty value
+raises ``ExtractionError`` with the offending payload rather than guessing,
+because a fact without them is useless. The *optional* ``valid_from`` is
+best-effort: it already defaults to the event timestamp when absent, so an
+unrecognized date degrades to that default with an ``ExtractionWarning`` instead
+of crashing — one fuzzy date must not abort a whole extraction pass.
 """
 
 from __future__ import annotations
 
 import json
+import re
+import warnings
 from collections.abc import Sequence
 from datetime import datetime, timezone
 from typing import Any
@@ -24,9 +30,20 @@ from mneme.llm.client import LLMClient
 
 _REQUIRED_FIELDS = ("subject", "predicate", "object")
 
+# Coarse temporal forms the model emits that are not ISO 8601 calendar dates.
+# Each resolves to the first instant of the period (the earliest the fact could
+# have become valid).
+_YEAR_RE = re.compile(r"^(\d{4})$")
+_YEAR_MONTH_RE = re.compile(r"^(\d{4})-(\d{2})$")
+_QUARTER_RE = re.compile(r"^(\d{4})-?Q([1-4])$", re.IGNORECASE)
+
 
 class ExtractionError(ValueError):
     """The LLM response could not be parsed into well-formed facts."""
+
+
+class ExtractionWarning(UserWarning):
+    """A non-fatal anomaly in an extraction (e.g. an unrecognized valid_from)."""
 
 
 class LLMExtractor:
@@ -103,17 +120,51 @@ def _strip_code_fences(text: str) -> str:
 
 
 def _parse_valid_from(raw: Any, *, default: datetime) -> datetime:
-    if raw is None or (isinstance(raw, str) and not raw.strip()):
+    if raw is None:
         return default
-    if not isinstance(raw, str):
-        raise ExtractionError(f"valid_from is not a string or null: {raw!r}")
-    try:
-        parsed = datetime.fromisoformat(raw.strip())
-    except ValueError as exc:
-        raise ExtractionError(f"valid_from is not ISO 8601: {raw!r}") from exc
+    text = str(raw).strip()
+    if not text:
+        return default
+
+    parsed = _try_iso_datetime(text) or _try_coarse_date(text)
+    if parsed is None:
+        warnings.warn(
+            f"valid_from {raw!r} is not a recognized date; "
+            "defaulting to the event timestamp",
+            ExtractionWarning,
+            stacklevel=2,
+        )
+        return default
     if parsed.tzinfo is None:
         return parsed.replace(tzinfo=timezone.utc)
     return parsed
+
+
+def _try_iso_datetime(text: str) -> datetime | None:
+    try:
+        return datetime.fromisoformat(text)
+    except ValueError:
+        return None
+
+
+def _try_coarse_date(text: str) -> datetime | None:
+    """Resolve year / year-month / year-quarter to the first day of the period."""
+    try:
+        match = _QUARTER_RE.match(text)
+        if match:
+            month = (int(match.group(2)) - 1) * 3 + 1
+            return datetime(int(match.group(1)), month, 1, tzinfo=timezone.utc)
+        match = _YEAR_MONTH_RE.match(text)
+        if match:
+            return datetime(
+                int(match.group(1)), int(match.group(2)), 1, tzinfo=timezone.utc
+            )
+        match = _YEAR_RE.match(text)
+        if match:
+            return datetime(int(match.group(1)), 1, 1, tzinfo=timezone.utc)
+    except ValueError:
+        return None
+    return None
 
 
 def _parse_confidence(raw: Any) -> float | None:
