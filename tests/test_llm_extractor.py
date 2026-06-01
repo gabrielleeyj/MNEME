@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 import pytest
 
 from mneme.domain.events import Actor, Event, EventType
-from mneme.facts.llm_extractor import ExtractionError, LLMExtractor
+from mneme.facts.llm_extractor import ExtractionError, ExtractionWarning, LLMExtractor
 
 
 class FakeLLMClient:
@@ -80,6 +80,56 @@ def test_naive_valid_from_is_coerced_to_utc():
     facts = extractor.extract(_event("x"))
 
     assert facts[0].valid_from == datetime(2026, 2, 1, 8, 30, tzinfo=timezone.utc)
+
+
+@pytest.mark.parametrize(
+    "raw, expected",
+    [
+        ("2026-Q1", datetime(2026, 1, 1, tzinfo=timezone.utc)),
+        ("2026-Q4", datetime(2026, 10, 1, tzinfo=timezone.utc)),
+        ("2026Q2", datetime(2026, 4, 1, tzinfo=timezone.utc)),
+        ("2026-03", datetime(2026, 3, 1, tzinfo=timezone.utc)),
+        ("2026", datetime(2026, 1, 1, tzinfo=timezone.utc)),
+    ],
+)
+def test_coarse_temporal_forms_resolve_to_start_of_period(raw, expected):
+    client = FakeLLMClient(
+        '{"facts": [{"subject": "a", "predicate": "p", "object": "o", '
+        f'"valid_from": "{raw}"}}]}}'
+    )
+    extractor = LLMExtractor(client)
+
+    facts = extractor.extract(_event("x"))
+
+    assert facts[0].valid_from == expected
+
+
+def test_unparseable_valid_from_warns_and_defaults_to_event_ts():
+    client = FakeLLMClient(
+        '{"facts": [{"subject": "a", "predicate": "p", "object": "o", '
+        '"valid_from": "sometime next spring"}]}'
+    )
+    extractor = LLMExtractor(client)
+
+    with pytest.warns(ExtractionWarning):
+        facts = extractor.extract(_event("x", day=8))
+
+    # The fact survives; only its date degrades to the event timestamp.
+    assert facts[0].object == "o"
+    assert facts[0].valid_from == datetime(2026, 1, 8, 12, 0, 0, tzinfo=timezone.utc)
+
+
+def test_invalid_month_in_coarse_form_warns_and_defaults():
+    client = FakeLLMClient(
+        '{"facts": [{"subject": "a", "predicate": "p", "object": "o", '
+        '"valid_from": "2026-13"}]}'
+    )
+    extractor = LLMExtractor(client)
+
+    with pytest.warns(ExtractionWarning):
+        facts = extractor.extract(_event("x", day=4))
+
+    assert facts[0].valid_from == datetime(2026, 1, 4, 12, 0, 0, tzinfo=timezone.utc)
 
 
 def test_extracts_multiple_facts():
