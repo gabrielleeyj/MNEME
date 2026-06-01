@@ -62,3 +62,46 @@ class KeywordExtractor:
 @pytest.fixture
 def extractor():
     return KeywordExtractor()
+
+
+# Fixed vocabulary the fake embedder counts over. Shared words between two
+# texts produce overlapping vectors and therefore high cosine, so retrieval
+# behaviour is real (not hand-rigged) while staying deterministic and offline.
+FAKE_VOCAB = (
+    "alice",
+    "bob",
+    "lives_in",
+    "works_at",
+    "likes",
+    "berlin",
+    "lisbon",
+    "acme",
+    "tea",
+    "climbing",
+)
+
+
+class FakeEmbeddingClient:
+    """Bag-of-words embedder over a fixed vocabulary. No network.
+
+    A trailing constant dimension keeps every vector non-zero, so L2
+    normalization never divides by zero even for out-of-vocabulary text.
+    """
+
+    def __init__(self) -> None:
+        self.calls: list[list[str]] = []
+
+    def embed(self, texts):
+        self.calls.append(list(texts))
+        return [self._vector(text) for text in texts]
+
+    @staticmethod
+    def _vector(text: str) -> list[float]:
+        tokens = text.lower().split()
+        counts = [float(tokens.count(word)) for word in FAKE_VOCAB]
+        return counts + [1.0]
+
+
+@pytest.fixture
+def fake_embedder():
+    return FakeEmbeddingClient()
