@@ -8,6 +8,8 @@ dependencies = []
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
 llm = ["anthropic>=0.40"]
+vectors = ["faiss-cpu>=1.8", "numpy>=1.26"]
+embeddings = ["openai>=1.0"]
 
 [build-system]
 requires = ["setuptools>=68"]
