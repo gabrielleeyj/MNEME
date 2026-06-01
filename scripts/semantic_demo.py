@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Eyeball semantic retrieval over a handful of facts.
 
-Requires a real key:  OPENAI_API_KEY=sk-... python scripts/semantic_demo.py
+No API key needed — embeddings run locally via fastembed (ONNX). The model is
+downloaded once on first run.
 Install the extras first:  pip install -e '.[vectors,embeddings]'
+Then run:  python scripts/semantic_demo.py
 
 This is the workstream-4 done check: do related queries surface the right
 facts (and keep contradiction pairs close together) without garbage?
@@ -13,7 +15,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from mneme.domain.facts import ExtractedFact
-from mneme.embeddings.client import OpenAIEmbeddingClient
+from mneme.embeddings.client import FastEmbedEmbeddingClient
 from mneme.index.render import embedding_text_for_fact
 from mneme.index.semantic_index import SemanticIndex
 
@@ -43,7 +45,7 @@ def _fact(subject: str, predicate: str, obj: str) -> ExtractedFact:
 
 
 def main() -> None:
-    index = SemanticIndex(OpenAIEmbeddingClient())
+    index = SemanticIndex(FastEmbedEmbeddingClient())
     facts = [_fact(*triple) for triple in FACTS]
     index.add_many(
         [(fact_id, embedding_text_for_fact(fact)) for fact_id, fact in enumerate(facts)]
