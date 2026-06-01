@@ -8,11 +8,11 @@ a network or an API key.
 from mneme.embeddings.client import (
     DEFAULT_EMBEDDING_MODEL,
     EmbeddingClient,
-    OpenAIEmbeddingClient,
+    FastEmbedEmbeddingClient,
 )
 
 __all__ = [
     "DEFAULT_EMBEDDING_MODEL",
     "EmbeddingClient",
-    "OpenAIEmbeddingClient",
+    "FastEmbedEmbeddingClient",
 ]
