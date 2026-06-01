@@ -1,17 +1,20 @@
 <h1 align="center">
-MENEME
-</h1>
+Mneme
+</h1> (Μνήμη)
+> is an Ancient Greek word meaning: memory, remembrance, or the faculty of memory.
+
 <h2 align="center">A From-First-Principles Architecture for AI Long-Term Memory</h2>
 
 <div>
-TL;DR: I'm trying to build a three-layer, append-only "engram store" with a shared substrate, not three databases. 
-A single immutable, content-addressed event log (Merkle DAG) feeds three co-derived indexes — a quantized vector graph for semantic recall, an Elias-Fano/learned temporal index for exact episodic and time-travel recall, and a bitemporal knowledge graph for causal/belief evolution. 
+TL;DR: I'm trying to build a three-layer, append-only "engram store" with a shared substrate, not three databases.
+A single immutable, content-addressed event log (Merkle DAG) feeds three co-derived indexes — a quantized vector graph for semantic recall, an Elias-Fano/learned temporal index for exact episodic and time-travel recall, and a bitemporal knowledge graph for causal/belief evolution.
   
-All three are projections of one log, so they stay consistent and share storage. Treat "forgetting" as belief revision, never as deletion. Borrow bitemporal (valid-time/transaction-time) modeling plus truth-maintenance/AGM supersession: facts get validity intervals and are invalidated (tombstoned with a successor pointer), not erased. Lossy compression is applied only to superseded content (delta-encoded against its successor), so still-valid information is never silently lost. 
+All three are projections of one log, so they stay consistent and share storage. Treat "forgetting" as belief revision, never as deletion. Borrow bitemporal (valid-time/transaction-time) modeling plus truth-maintenance/AGM supersession: facts get validity intervals and are invalidated (tombstoned with a successor pointer), not erased. Lossy compression is applied only to superseded content (delta-encoded against its successor), so still-valid information is never silently lost.
   
-It is still in the prototype phase building on existing primitives: an LSM/log-structured store, the SDSL succinct-structures library, FAISS/DiskANN or SPANN+SPFresh for the vector layer with RaBitQ 1-bit quantization, Matryoshka-truncatable embeddings, and a Graphiti-style bitemporal graph. 
+It is still in the prototype phase building on existing primitives: an LSM/log-structured store, the SDSL succinct-structures library, FAISS/DiskANN or SPANN+SPFresh for the vector layer with RaBitQ 1-bit quantization, Matryoshka-truncatable embeddings, and a Graphiti-style bitemporal graph.
 
 The key parts that are different from other implementations are the consolidation pipeline and the shared-substrate routing, not any new ANN math.
+
 </div>
 
 This is not <a href="https://github.com/getzep/graphiti">Graphiti</a> but it is the nearest thing conceptually and it borrows some ideas from it. [![arXiv](https://img.shields.io/badge/arXiv-2501.13956-b31b1b.svg?style=flat)](https://arxiv.org/abs/2501.13956)
@@ -53,13 +56,13 @@ The invariant that is the whole architecture: **`events` is pure append (enforce
 
 - `LLMExtractor` turns one event into `(subject, predicate, object, valid_from)` candidates, implementing the `Extractor` seam so it plugs straight into `FactStore.rebuild` and every baseline — `mneme/facts/llm_extractor.py`.
 - One shared `LLMClient` / `AnthropicClient` serves both extraction (recall-tuned) and the WS3 contradiction judge (precision-tuned) — same model, different operating points — `mneme/llm/`.
-- Model output is untrusted: parsing is strict and raises `ExtractionError` on malformed payloads rather than dropping facts silently.
+- Model output is untrusted: the required triple (subject/predicate/object) is parsed strictly and raises `ExtractionError` rather than guessing, while the optional `valid_from` is best-effort — coarse forms (`2026-Q1`, `2026-03`) resolve to the period start and unrecognized dates degrade to the event timestamp with a warning, so one fuzzy date never aborts a run.
 
 ### Run it
 
 ```bash
 pip install -e '.[dev]'        # core + test deps
-pytest                          # 45 tests
+pytest                          # 52 tests
 
 pip install -e '.[llm]'         # adds the anthropic client
 ANTHROPIC_API_KEY=… python scripts/extract_demo.py   # eyeball extraction
