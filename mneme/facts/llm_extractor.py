@@ -16,7 +16,6 @@ of crashing — one fuzzy date must not abort a whole extraction pass.
 
 from __future__ import annotations
 
-import json
 import re
 import warnings
 from collections.abc import Sequence
@@ -27,6 +26,7 @@ from mneme.domain.events import Event
 from mneme.domain.facts import ExtractedFact
 from mneme.facts.prompts import EXTRACTION_SYSTEM_PROMPT, build_extraction_user_prompt
 from mneme.llm.client import LLMClient
+from mneme.llm.json_io import JSONExtractionError, extract_json_object
 
 _REQUIRED_FIELDS = ("subject", "predicate", "object")
 
@@ -92,31 +92,10 @@ def _parse_facts_payload(raw: str) -> list[Any]:
 
 
 def _load_json_object(raw: str) -> Any:
-    text = _strip_code_fences(raw.strip())
     try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        pass
-    # Tolerate prose around the object: take the outermost {...} span.
-    start, end = text.find("{"), text.rfind("}")
-    if start == -1 or end == -1 or end < start:
-        raise ExtractionError(f"no JSON object found in response: {raw!r}")
-    try:
-        return json.loads(text[start : end + 1])
-    except json.JSONDecodeError as exc:
-        raise ExtractionError(f"could not parse JSON from response: {raw!r}") from exc
-
-
-def _strip_code_fences(text: str) -> str:
-    if not text.startswith("```"):
-        return text
-    body = text[3:]
-    if body.startswith("json"):
-        body = body[4:]
-    closing = body.rfind("```")
-    if closing != -1:
-        body = body[:closing]
-    return body.strip()
+        return extract_json_object(raw)
+    except JSONExtractionError as exc:
+        raise ExtractionError(str(exc)) from exc
 
 
 def _parse_valid_from(raw: Any, *, default: datetime) -> datetime:

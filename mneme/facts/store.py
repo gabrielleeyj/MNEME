@@ -109,6 +109,59 @@ class FactStore:
         self._conn.commit()
         return self.get(fact_id)
 
+    def current_for(self, subject: str, predicate: str) -> Fact | None:
+        """The current fact for a subject+predicate slot, or None.
+
+        Used by the B0 overwrite ablation to find the single belief it will
+        replace in place. Supersession keeps at most one current fact per slot,
+        so this returns the earliest-inserted current match for safety.
+        """
+        row = self._conn.execute(
+            f"SELECT {_COLUMNS} FROM facts "
+            "WHERE subject = ? AND predicate = ? AND superseded_at IS NULL "
+            "ORDER BY fact_id LIMIT 1",
+            (subject, predicate),
+        ).fetchone()
+        return _row_to_fact(row) if row is not None else None
+
+    def overwrite(
+        self,
+        fact_id: int,
+        candidate: ExtractedFact,
+        source_event_id: int,
+        *,
+        ingested_at: datetime | None = None,
+    ) -> Fact:
+        """Replace a fact's value in place — the B0 ablation's destructive write.
+
+        Last-write-wins: the object, validity, provenance, and confidence are
+        overwritten and the prior value is gone. This is the deliberate opposite
+        of ``close_out``; it exists only so the overwrite baseline can lose
+        history, which is exactly what the thesis measures against.
+        """
+        if not candidate.subject or not candidate.predicate or not candidate.object:
+            raise ValueError("fact subject, predicate, and object must be non-empty")
+        learned = ingested_at if ingested_at is not None else datetime.now(timezone.utc)
+
+        self.get(fact_id)  # raises KeyError if absent
+        self._conn.execute(
+            "UPDATE facts SET subject = ?, predicate = ?, object = ?, "
+            "valid_from = ?, ingested_at = ?, source_event_id = ?, confidence = ? "
+            "WHERE fact_id = ?",
+            (
+                candidate.subject,
+                candidate.predicate,
+                candidate.object,
+                to_iso(candidate.valid_from),
+                to_iso(learned),
+                source_event_id,
+                candidate.confidence,
+                fact_id,
+            ),
+        )
+        self._conn.commit()
+        return self.get(fact_id)
+
     def get(self, fact_id: int) -> Fact:
         row = self._conn.execute(
             f"SELECT {_COLUMNS} FROM facts WHERE fact_id = ?", (fact_id,)
