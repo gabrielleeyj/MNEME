@@ -13,7 +13,7 @@ piling up duplicates or silently overwriting the past?
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from mneme.db import init_db
 from mneme.domain.events import Actor, EventType
@@ -27,17 +27,18 @@ from mneme.index.semantic_index import SemanticIndex
 from mneme.llm.client import AnthropicClient
 from mneme.log.event_log import EventLog
 
-# (day-of-January, message). Ascending so supersession runs in time order.
+# (day-offset, message). Ascending so supersession runs in time order.
+_START = datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
 TIMELINE: list[tuple[int, str]] = [
-    (1, "I just moved to Berlin for a new job at Acme."),
-    (8, "Honestly I'm all about climbing these days."),
-    (40, "Quick update: I relocated from Berlin to Lisbon last week."),
-    (55, "I left Acme — started at Globex this month."),
+    (0, "I just moved to Berlin for a new job at Acme."),
+    (7, "Honestly I'm all about climbing these days."),
+    (39, "Quick update: I relocated from Berlin to Lisbon last week."),
+    (54, "I left Acme — started at Globex this month."),
 ]
 
 
 def _ts(day: int) -> datetime:
-    return datetime(2026, 1, day, 12, 0, 0, tzinfo=timezone.utc)
+    return _START + timedelta(days=day)
 
 
 def _print_state(store: FactStore) -> None:
