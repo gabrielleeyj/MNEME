@@ -27,7 +27,17 @@ I am not trying to build "another" graph/vector database with memory features. M
 
 The MVP is a deliberately small Python/SQLite slice of the architecture above: **one append-only log as the source of truth, and a fact projection that is rebuildable from it.** Everything on the scaling list (Merkle DAG, Elias-Fano/learned temporal index, RaBitQ quantization, ATMS) is intentionally deferred until a measured number justifies it.
 
-The MVP exists to settle **one** question: is supersession-based memory worth it at all? The whole project is measured against the **B0 ablation** — the same pipeline with history-preserving supersession swapped for last-write-wins overwrite. A loss to B0 means supersession was never worth the complexity. The ingest spine (WS1→WS2→WS3), the semantic candidate path (WS4), the read side (WS5), and the gold dataset that scores them (WS7) are in; the baselines and scoring harness that produce the number are next.
+The MVP exists to settle **one** question: is supersession-based memory worth it at all? The whole project is measured against the **B0 ablation** — the same pipeline with history-preserving supersession swapped for last-write-wins overwrite. A loss to B0 means supersession was never worth the complexity. The ingest spine (WS1→WS2→WS3), the semantic candidate path (WS4), the read side (WS5), the gold dataset (WS7), and the scoring harness that turns them into the B0 number are in; the remaining baselines (B1/B2/B3) are next.
+
+The B0 gate, run offline against the gold scenarios (`python scripts/eval_harness.py`):
+
+```
+system     overall  current  historical  evolution
+supersede  100%     100%     100%        100%
+overwrite  50%      100%     0%          33%
+```
+
+`current` is a tie — overwrite keeps the latest belief, so it answers "where does alice live now?" just fine. The gap is the whole thesis: overwrite scores **0% on `historical`** and collapses to **33% on `evolution`** (only a never-changed fact, a chain of one, survives), because it threw the past away. Supersession keeps it and answers everything.
 
 ### Ingest — the write path (WS1–WS4)
 
@@ -71,7 +81,7 @@ flowchart LR
     evolution -.->|"needs history"| gone
 ```
 
-`historical` and `evolution` are the discriminator: overwrite keeps one row per slot, so a past instant resolves to nothing and the evolution chain collapses to length one. That gap is what the eval harness will measure.
+`historical` and `evolution` are the discriminator: overwrite keeps one row per slot, so a past instant resolves to nothing and the evolution chain collapses to length one. That gap is what the eval harness measures (the B0 table above).
 
 ### WS1 — schema + append-only event log
 
@@ -105,16 +115,19 @@ flowchart LR
 - `QueryRouter.current / historical(as_of) / evolution` over a `(subject, predicate)` slot — `mneme/query/router.py`. Deterministic and LLM-free: it takes a structured slot, not a natural-language question.
 - `evolution` walks the `superseded_by` chain from its unique head, with a valid-time fallback and a seen-guard so a corrupted projection can never loop.
 
-### WS7 — synthetic dataset (the spec and the discriminator)
+### WS7 — synthetic dataset + the B0 eval harness
 
-- Hand-authored, self-checked gold scenarios: known timelines whose facts, supersession relations, and query answers are validated for internal consistency at authoring time — `mneme/eval/`.
-- It is simultaneously the **spec for the detector** (each event carries the relation it should be judged as) and the **discriminator for the B0 gate** (its `historical`/`evolution` queries are only answerable by a history-preserving store). `materialize()` renders a scenario into immutable log events.
+- Hand-authored, self-checked gold scenarios: known timelines whose facts, supersession relations, and query answers are validated for internal consistency at authoring time — `mneme/eval/dataset.py`, `mneme/eval/validate.py`.
+- The gold is simultaneously the **spec for the detector** (each event carries the relation it should be judged as) and the **discriminator for the B0 gate** (its `historical`/`evolution` queries are only answerable by a history-preserving store). `materialize()` renders a scenario into immutable log events.
+- `ScenarioOracleDetector` swaps the LLM judge for the gold relations, so the harness runs offline and **deterministically** — holding extraction and judgment fixed so the only variable between the two systems is the storage policy — `mneme/eval/oracle.py`.
+- The harness ingests each scenario into a fresh in-memory store under Supersede vs Overwrite, runs the router over every gold query, and scores answer accuracy by query kind — `mneme/eval/harness.py`, run via `scripts/eval_harness.py`. The supersede-minus-overwrite gap on `historical`/`evolution` **is** the B0 result above.
 
 ### Run it
 
 ```bash
 pip install -e '.[dev,vectors,embeddings]'   # core + tests + FAISS + local embeddings
-pytest                                         # 148 tests, no API key needed
+pytest                                         # 160 tests, no API key needed
+python scripts/eval_harness.py                 # the B0 gate, offline + keyless
 
 pip install -e '.[llm]'                        # adds the anthropic client
 ANTHROPIC_API_KEY=… python scripts/extract_demo.py     # eyeball extraction
@@ -122,4 +135,4 @@ ANTHROPIC_API_KEY=… python scripts/supersede_demo.py   # full supersession pip
 python scripts/semantic_demo.py                        # local embeddings + FAISS, keyless
 ```
 
-**Next:** WS6 baselines (B1 raw RAG, B2 summary, B3 Graphiti-like) and the WS7 **eval harness** — ingest each gold scenario under Supersede vs Overwrite, run the router over the gold queries, and score answer accuracy plus the false-supersession rate. That is the B0 number the whole project turns on.
+**Next:** WS6 baselines (B1 raw RAG, B2 summary, B3 Graphiti-like). The B0 gate is settled — supersession beats overwrite outright on the history-dependent queries; the remaining baselines test it against the RAG-style alternatives the field actually reaches for.

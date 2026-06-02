@@ -16,6 +16,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 from mneme.domain.events import Actor, Event, EventType
+from mneme.domain.facts import ExtractedFact
 from mneme.eval.scenario import (
     Assertion,
     QueryKind,
@@ -28,6 +29,8 @@ from mneme.facts.detector import Relation
 __all__ = [
     "DEFAULT_START",
     "GOLD_SCENARIOS",
+    "candidate_for",
+    "instant_for",
     "materialize",
     "total_event_count",
 ]
@@ -194,6 +197,31 @@ def materialize(
             )
         )
     return tuple(events)
+
+
+def instant_for(day: int, *, start: datetime = DEFAULT_START) -> datetime:
+    """The absolute timestamp a scenario day offset maps to."""
+    return start + timedelta(days=day)
+
+
+def candidate_for(
+    event: ScenarioEvent, *, start: datetime = DEFAULT_START
+) -> ExtractedFact | None:
+    """The fact candidate an event asserts, or ``None`` for chatter.
+
+    The harness and the oracle both build candidates through this one helper, so
+    the candidate the policy stores is byte-for-byte the key the oracle looks up
+    its gold relation under.
+    """
+    if event.assertion is None:
+        return None
+    assertion = event.assertion
+    return ExtractedFact(
+        subject=assertion.subject,
+        predicate=assertion.predicate,
+        object=assertion.object,
+        valid_from=instant_for(event.day, start=start),
+    )
 
 
 def total_event_count(scenarios: tuple[Scenario, ...] = GOLD_SCENARIOS) -> int:
