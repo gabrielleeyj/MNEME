@@ -25,47 +25,101 @@ I am not trying to build "another" graph/vector database with memory features. M
 
 ## MVP — implemented so far
 
-The MVP is a deliberately small Python/SQLite slice of the architecture above: **one append-only log as the source of truth, and a fact projection that is rebuildable from it.** Everything on the scaling list (Merkle DAG, Elias-Fano/learned temporal index, RaBitQ quantization, ATMS) is intentionally deferred until a measured number justifies it. Two workstreams are in.
+The MVP is a deliberately small Python/SQLite slice of the architecture above: **one append-only log as the source of truth, and a fact projection that is rebuildable from it.** Everything on the scaling list (Merkle DAG, Elias-Fano/learned temporal index, RaBitQ quantization, ATMS) is intentionally deferred until a measured number justifies it.
 
-### Data flow (WS1 + WS2)
+The MVP exists to settle **one** question: is supersession-based memory worth it at all? The whole project is measured against the **B0 ablation** — the same pipeline with history-preserving supersession swapped for last-write-wins overwrite. A loss to B0 means supersession was never worth the complexity. The ingest spine (WS1→WS2→WS3), the semantic candidate path (WS4), the read side (WS5), and the gold dataset that scores them (WS7) are in; the baselines and scoring harness that produce the number are next.
+
+### Ingest — the write path (WS1–WS4)
 
 ```mermaid
 flowchart TD
     turn(["conversation turn"]) -->|"EventLog.append"| events[("events<br/>append-only log · source of truth<br/>UPDATE / DELETE locked by triggers")]
 
     events -->|"replay"| extractor["LLMExtractor · WS2<br/>event → subject, predicate, object, valid_from"]
-    extractor -->|"ExtractedFact"| policy{"WritePolicy · WS3 (next)<br/>Supersede or Overwrite/B0"}
-    policy -->|"insert / close_out"| facts[("facts<br/>derived read-model · bitemporal")]
+    extractor -->|"ExtractedFact"| policy{"WritePolicy · WS3<br/>Supersede · Overwrite/B0 · InsertOnly"}
+
+    provider["CandidateProvider · WS4<br/>subject-match or top-k semantic neighbours"]
+    facts[("facts<br/>derived read-model · bitemporal")]
+    detector["ContradictionDetector · WS3<br/>new / duplicate / refines / supersedes"]
+
+    facts -.->|"candidate set"| provider
+    provider -.-> policy
+    policy -->|"judge"| detector
+    detector -->|"relation"| policy
+    policy -->|"insert / close_out"| facts
 
     subgraph rebuild ["FactStore.rebuild() — facts are re-derivable from the log"]
         extractor
         policy
+        detector
     end
 ```
 
 The invariant that is the whole architecture: **`events` is pure append (enforced in the schema by `UPDATE`/`DELETE` triggers), and `facts` is a projection that `FactStore.rebuild()` can throw away and re-derive from the log at any time.** If extraction improves or the projection is corrupted, you replay the log and rebuild.
 
+### Read — the query path (WS5)
+
+```mermaid
+flowchart LR
+    facts[("facts<br/>bitemporal projection")] --> router["QueryRouter · WS5"]
+    router --> current["current<br/>belief in force now"]
+    router --> historical["historical(as_of)<br/>belief at an instant"]
+    router --> evolution["evolution<br/>walk superseded_by chain"]
+
+    current -.->|"survives B0"| ok([" ✅ overwrite can answer "])
+    historical -.->|"needs history"| gone([" ❌ overwrite lost it "])
+    evolution -.->|"needs history"| gone
+```
+
+`historical` and `evolution` are the discriminator: overwrite keeps one row per slot, so a past instant resolves to nothing and the evolution chain collapses to length one. That gap is what the eval harness will measure.
+
 ### WS1 — schema + append-only event log
 
 - `events` (immutable) and `facts` (derived, bitemporal: valid-time + transaction-time) tables — `mneme/db/schema.sql`.
 - `EventLog.append / get / replay` — `mneme/log/event_log.py`.
-- `FactStore.insert / close_out / current_facts / rebuild` — `mneme/facts/store.py`. `close_out` is the only write-after-insert on a fact (the supersession write); `facts` is left mutable so the WS3 Overwrite/B0 ablation can last-write-wins in place.
-- Seams fixed for what follows: `Extractor` (WS2) and `WritePolicy` (WS3) protocols.
+- `FactStore` — `insert`, `close_out` (the supersession write), `overwrite` (the B0 destructive write), `current_for`, `slot_facts`, `current_facts`, `rebuild` — `mneme/facts/store.py`. `facts` is left mutable on purpose so the Overwrite/B0 ablation can last-write-wins in place.
 
 ### WS2 — LLM fact extractor
 
 - `LLMExtractor` turns one event into `(subject, predicate, object, valid_from)` candidates, implementing the `Extractor` seam so it plugs straight into `FactStore.rebuild` and every baseline — `mneme/facts/llm_extractor.py`.
-- One shared `LLMClient` / `AnthropicClient` serves both extraction (recall-tuned) and the WS3 contradiction judge (precision-tuned) — same model, different operating points — `mneme/llm/`.
-- Model output is untrusted: the required triple (subject/predicate/object) is parsed strictly and raises `ExtractionError` rather than guessing, while the optional `valid_from` is best-effort — coarse forms (`2026-Q1`, `2026-03`) resolve to the period start and unrecognized dates degrade to the event timestamp with a warning, so one fuzzy date never aborts a run.
+- One shared `LLMClient` / `AnthropicClient` serves both extraction (recall-tuned) and the contradiction judge (precision-tuned) — same model, different operating points — `mneme/llm/`.
+- Model output is untrusted: the required triple is parsed strictly and raises `ExtractionError` rather than guessing, while the optional `valid_from` is best-effort — coarse forms (`2026-Q1`, `2026-03`) resolve to the period start and unrecognized dates degrade to the event timestamp with a warning, so one fuzzy date never aborts a run.
+
+### WS3 — contradiction detector + write policies (the thesis and the risk)
+
+- `ContradictionDetector` classifies a candidate against the facts it might touch as `new` / `duplicate` / `refines` / `supersedes`, tuned for precision and short-circuiting to `new` when there is nothing to compare against (no LLM call, no chance to hallucinate a conflict) — `mneme/facts/detector.py`. The judgment is untrusted external data, validated strictly.
+- The defining error is a **false supersession** — closing out a fact that was not really contradicted — so it is tracked as its own metric.
+- Three policies share one extractor and one store, so the comparison is structural and free — `mneme/facts/policy.py`:
+  - `SupersedePolicy` — the thesis: on a conflict, insert the new fact and `close_out` the old one on both temporal axes, keeping full history.
+  - `OverwritePolicy` — the **B0 ablation**: last-write-wins on the subject+predicate slot, in place, history gone.
+  - `InsertOnlyPolicy` — the no-conflict-handling default used by `rebuild`.
+
+### WS4 — embeddings + FAISS HNSW semantic index
+
+- `FastEmbedEmbeddingClient` — local ONNX embeddings (`BAAI/bge-small-en-v1.5`, 384-dim), **no API key required** — `mneme/embeddings/`.
+- `FaissHnswIndex` (cosine via inner product over L2-normalized vectors) wrapped by a domain-agnostic `SemanticIndex` — `mneme/index/`.
+- `CandidateProvider` feeds the detector the facts worth comparing against: `SubjectCandidateProvider` (exact subject match) or `SemanticCandidateProvider` (top-k neighbours), so what you embed at fact granularity is load-bearing — `mneme/facts/candidates.py`.
+
+### WS5 — query router
+
+- `QueryRouter.current / historical(as_of) / evolution` over a `(subject, predicate)` slot — `mneme/query/router.py`. Deterministic and LLM-free: it takes a structured slot, not a natural-language question.
+- `evolution` walks the `superseded_by` chain from its unique head, with a valid-time fallback and a seen-guard so a corrupted projection can never loop.
+
+### WS7 — synthetic dataset (the spec and the discriminator)
+
+- Hand-authored, self-checked gold scenarios: known timelines whose facts, supersession relations, and query answers are validated for internal consistency at authoring time — `mneme/eval/`.
+- It is simultaneously the **spec for the detector** (each event carries the relation it should be judged as) and the **discriminator for the B0 gate** (its `historical`/`evolution` queries are only answerable by a history-preserving store). `materialize()` renders a scenario into immutable log events.
 
 ### Run it
 
 ```bash
-pip install -e '.[dev]'        # core + test deps
-pytest                          # 52 tests
+pip install -e '.[dev,vectors,embeddings]'   # core + tests + FAISS + local embeddings
+pytest                                         # 148 tests, no API key needed
 
-pip install -e '.[llm]'         # adds the anthropic client
-ANTHROPIC_API_KEY=… python scripts/extract_demo.py   # eyeball extraction
+pip install -e '.[llm]'                        # adds the anthropic client
+ANTHROPIC_API_KEY=… python scripts/extract_demo.py     # eyeball extraction
+ANTHROPIC_API_KEY=… python scripts/supersede_demo.py   # full supersession pipeline
+python scripts/semantic_demo.py                        # local embeddings + FAISS, keyless
 ```
 
-**Next:** WS3 (fact store write policy + contradiction detector — the thesis and the risk, where the B0 ablation falls out for free), with WS4 (embeddings + FAISS HNSW) running in parallel to feed WS3's nearest-neighbor candidate set.
+**Next:** WS6 baselines (B1 raw RAG, B2 summary, B3 Graphiti-like) and the WS7 **eval harness** — ingest each gold scenario under Supersede vs Overwrite, run the router over the gold queries, and score answer accuracy plus the false-supersession rate. That is the B0 number the whole project turns on.
