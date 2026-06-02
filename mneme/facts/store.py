@@ -170,6 +170,22 @@ class FactStore:
             raise KeyError(f"no fact with fact_id={fact_id}")
         return _row_to_fact(row)
 
+    def slot_facts(self, subject: str, predicate: str) -> list[Fact]:
+        """Every fact for a subject+predicate slot, current and superseded.
+
+        Ordered by valid-time then insertion, so the supersession chain reads
+        back oldest-first. The query router walks ``superseded_by`` over this set
+        to reconstruct a slot's history — the operation the B0 overwrite baseline
+        cannot answer, because it keeps only the latest row.
+        """
+        rows = self._conn.execute(
+            f"SELECT {_COLUMNS} FROM facts "
+            "WHERE subject = ? AND predicate = ? "
+            "ORDER BY valid_from, fact_id",
+            (subject, predicate),
+        )
+        return [_row_to_fact(row) for row in rows]
+
     def current_facts(self) -> list[Fact]:
         """Every fact that is still believed (not superseded)."""
         rows = self._conn.execute(
