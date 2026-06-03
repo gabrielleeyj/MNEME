@@ -72,6 +72,54 @@ def test_last_assistant_text_handles_missing_file(tmp_path: Path):
     assert common.last_assistant_text(None) == ""
 
 
+# --- _common.assistant_reply (host-agnostic) -----------------------------------
+
+
+def test_assistant_reply_prefers_direct_field(tmp_path: Path):
+    # Codex delivers the reply inline; the transcript is irrelevant.
+    transcript = tmp_path / "t.jsonl"
+    _write_transcript(
+        transcript,
+        [{"type": "assistant", "message": {"content": [{"type": "text", "text": "from file"}]}}],
+    )
+
+    payload = {"last_assistant_message": "from codex", "transcript_path": str(transcript)}
+
+    assert common.assistant_reply(payload) == "from codex"
+
+
+def test_assistant_reply_falls_back_to_transcript(tmp_path: Path):
+    # Claude Code has no direct field, so the transcript is the source.
+    transcript = tmp_path / "t.jsonl"
+    _write_transcript(
+        transcript,
+        [{"type": "assistant", "message": {"content": [{"type": "text", "text": "from file"}]}}],
+    )
+
+    payload = {"transcript_path": str(transcript)}
+
+    assert common.assistant_reply(payload) == "from file"
+
+
+def test_assistant_reply_empty_when_nothing_available():
+    assert common.assistant_reply({}) == ""
+    assert common.assistant_reply({"last_assistant_message": "   "}) == ""
+
+
+# --- _common.stop_consolidation_enabled ----------------------------------------
+
+
+def test_stop_consolidation_default_on(monkeypatch):
+    monkeypatch.delenv(common.STOP_CONSOLIDATION_ENV, raising=False)
+    assert common.stop_consolidation_enabled() is True
+
+
+@pytest.mark.parametrize("value", ["false", "0", "off", "no", "FALSE"])
+def test_stop_consolidation_disabled_by_falsey(monkeypatch, value):
+    monkeypatch.setenv(common.STOP_CONSOLIDATION_ENV, value)
+    assert common.stop_consolidation_enabled() is False
+
+
 def test_read_payload_tolerates_garbage(monkeypatch):
     monkeypatch.setattr(common.sys, "stdin", _FakeStdin("{not json"))
     assert common.read_payload() == {}
@@ -142,6 +190,20 @@ def test_capture_stop_records_assistant_turn(tmp_path: Path):
 
     assert result.returncode == 0
     assert _events(db) == [("assistant", "message", "Noted.")]
+
+
+def test_capture_stop_records_codex_inline_reply(tmp_path: Path):
+    # Codex Stop payload carries the reply directly, no transcript file.
+    db = tmp_path / "memory.db"
+
+    result = _run_hook(
+        "capture_stop.py",
+        {"cwd": str(tmp_path), "last_assistant_message": "Codex reply.", "hook_event_name": "Stop"},
+        db,
+    )
+
+    assert result.returncode == 0
+    assert _events(db) == [("assistant", "message", "Codex reply.")]
 
 
 def test_session_start_emits_summary_for_known_facts(tmp_path: Path):

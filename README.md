@@ -140,9 +140,9 @@ b3-bitemporal  100%     100%     100%        100%
 - `LLMJudge` grades each free-text answer against the gold reference (meaning, not wording), parsed strictly into a boolean. The embedder (B1) and the LLM client are injected, so the suite runs offline with a fake embedder + scripted client; the live numbers come from `scripts/baselines_demo.py` (real embeddings + Anthropic). The free-text baselines' weakness is expected on `historical`/`evolution`, exactly where supersession earns its keep.
 - **B3 bitemporal** (`BitemporalStore`) is the strong baseline, and the odd one out. It is a faithful Graphiti-like store — real bitemporal edges, invalidated in place on contradiction (Graphiti's "expired" edge), history read back by valid-time intervals — so it answers `historical`/`evolution` as well as MNEME does. Because it produces exact structured answers it is scored on the **B0 gate's exact-match path**, not the judge path: driven by the same gold relations as the supersede oracle, offline and deterministic, reported as a third row beside supersede/overwrite. The substrate difference is real: B3 has **no event log behind it** (nothing to `rebuild` from) and links nothing — where MNEME's facts are a rebuildable projection of an append-only log. At this scale the two tie (B3 ≈ supersede, both 100%), and **that tie is the point**: it keeps the substrate question open, since event-sourcing's payoff (auditability, rebuild, scale-consistency) is invisible at ~10 events.
 
-### WS8 — Claude Code plugin: memory that captures itself
+### WS8 — agent plugin: memory that captures itself
 
-The plugin (`plugins/mneme-memory/`) turns the engine above into live memory for Claude Code: it records the conversation as you go and hands the model back what earlier sessions established. It is built on a **two-phase, cost-aware** split — capture is free and always-on; consolidation spends tokens and runs on a threshold — so a keyless machine still captures everything and simply defers extraction.
+The plugin (`plugins/mneme-memory/`) turns the engine above into live memory for a coding agent — Claude Code and Codex CLI both — recording the conversation as you go and handing the model back what earlier sessions established. It is built on a **two-phase, cost-aware** split — capture is free and always-on; consolidation spends tokens and runs on a threshold — so a keyless machine still captures everything and simply defers extraction. The hook scripts and MCP server are host-agnostic; see the Codex note below for the one place the two hosts differ.
 
 ```mermaid
 flowchart TD
@@ -165,7 +165,7 @@ flowchart TD
     start -->|"inject known facts"| claude
 ```
 
-- **Capture (free, no LLM).** `UserPromptSubmit` appends the user's prompt and the async `Stop` hook appends Claude's reply, straight to the event log — `mneme/service/memory.py::capture`. Losing a turn is the only unrecoverable failure, so this half stays cheap and total; it runs with or without a key.
+- **Capture (free, no LLM).** `UserPromptSubmit` appends the user's prompt and the `Stop` hook appends the assistant's reply, straight to the event log — `mneme/service/memory.py::capture`. Losing a turn is the only unrecoverable failure, so this half stays cheap and total; it runs with or without a key.
 - **Consolidate (LLM, incremental).** When enough turns have piled up (`MNEME_CONSOLIDATE_EVERY`, default 6) the `Stop` hook folds the un-consolidated tail into facts under the Supersede policy, and `SessionStart` catches up anything left from last session. A **watermark** (`mneme/service/meta.py`) makes this resumable — a crash mid-pass loses no ground and a re-run pays only for unseen turns.
 - **Recall, two ways.** `SessionStart` injects a compact summary of current beliefs as `additionalContext`, so Claude starts already knowing what was established; and the **MCP server** (`python -m mneme.mcp`) exposes the read side as tools — `recall` / `history` / `evolution` / `remember` / `consolidate` / `memory_summary` (`mneme/mcp/`). The tool logic is MCP-free and unit-tested; the server is a thin FastMCP adapter, lazily imported so the package installs without `mcp`.
 - **Scope.** Memory is per-project by default (`<project>/.mneme/memory.db`); set `MNEME_SCOPE=global` for one store that follows you across projects, or `MNEME_DB` to point anywhere — `mneme/service/paths.py`. The store runs in SQLite WAL mode so the long-lived MCP process and the short-lived hooks can share the file.
@@ -176,11 +176,18 @@ pip install -e '.[llm,mcp]'                                 # client + MCP serve
 claude --plugin-dir ./plugins/mneme-memory                  # load the plugin into a session
 ```
 
+**Codex CLI** gets the same memory from the same code. Codex shares Claude Code's hook model — the `UserPromptSubmit` / `Stop` / `SessionStart` events, the stdin JSON shape, and the `additionalContext` stdout contract — so the three hook scripts and the MCP server are reused as-is; only the registration differs (TOML in `~/.codex/config.toml` instead of a plugin folder). Two host quirks are handled in `hooks/_common.py`: Codex hands the `Stop` hook its reply inline as `last_assistant_message` (so no transcript parsing — `assistant_reply` prefers it), and Codex has no async hooks yet, so `MNEME_CONSOLIDATE_ON_STOP=false` defers consolidation to `SessionStart` to keep turn-ends snappy. Copy the two blocks from `plugins/mneme-memory/codex/config.example.toml` (MCP server + hooks) into your Codex config, replacing `<MNEME>` with this repo's path:
+
+```bash
+pip install -e '.[llm,mcp]'                                 # same extras
+$EDITOR ~/.codex/config.toml                                # merge in codex/config.example.toml
+```
+
 ### Run it
 
 ```bash
 pip install -e '.[dev,vectors,embeddings]'   # core + tests + FAISS + local embeddings
-pytest                                         # 252 tests, no API key needed
+pytest                                         # 266 tests, no API key needed
 python scripts/eval_harness.py                 # the B0 gate + B3, offline + keyless
 python scripts/generate_dataset.py             # the ~1000-event scale gate, offline + keyless
 
