@@ -1,7 +1,8 @@
-<h1 align="center">
-Mneme
-</h1> (Μνήμη)
+<p align="center">
+  <img src="assets/mneme-logo-outlined.svg" alt="Mneme Logo" width="200">
+> (Μνήμη)
 > is an Ancient Greek word meaning: memory, remembrance, or the faculty of memory.
+</p>
 
 <h2 align="center">A From-First-Principles Architecture for AI Long-Term Memory</h2>
 
@@ -124,7 +125,7 @@ flowchart LR
 
 ### WS6 — baselines: B1 raw RAG
 
-- B0 (overwrite) is free from WS3 and is scored inside the B0 gate. The other baselines don't share MNEME's structured storage — they answer in free text — so they live in `mneme/baselines/` on their own scoring path: **NL answer + LLM-as-judge**, the standard for free-text memory evals, reported *beside* the exact-match gate rather than merged into it.
+- B0 (overwrite) is free from WS3 and is scored inside the B0 gate. The other baselines don't share MNEME's structured storage — they answer in free text — so they live in `mneme/baselines/` on their own scoring path: **NL answer + LLM-as-judge**, the standard for free-text memory evals, reported _beside_ the exact-match gate rather than merged into it.
 - **B1 raw RAG** (`RawRagBaseline`): embed every message (chatter included), retrieve the top-k nearest for a question, and let the model answer from that raw text alone — no facts, no supersession, no valid-time index. The naive straw man the thesis must beat. Retrieval reuses the WS4 `SemanticIndex`; the answer step is the only model call.
 - `LLMJudge` grades each free-text answer against the gold reference (meaning, not wording), parsed strictly into a boolean. Both the embedder and the LLM client are injected, so the suite runs offline with a fake embedder + scripted client; the live number comes from `scripts/baselines_demo.py` (real embeddings + Anthropic). B1's weakness is expected on `historical`/`evolution`, exactly where supersession earns its keep.
 
@@ -142,4 +143,4 @@ ANTHROPIC_API_KEY=… python scripts/baselines_demo.py   # B1 raw RAG: NL answer
 python scripts/semantic_demo.py                        # local embeddings + FAISS, keyless
 ```
 
-**Next:** the rest of WS6 — B2 summary and B3 Graphiti-like. B1 raw RAG is in; B3 must be a faithful bitemporal store, since a *tie* against it is the verdict that keeps the substrate question open. These test supersession against the RAG-style alternatives the field actually reaches for.
+**Next:** the rest of WS6 — B2 summary and B3 Graphiti-like. B1 raw RAG is in; B3 must be a faithful bitemporal store, since a _tie_ against it is the verdict that keeps the substrate question open. These test supersession against the RAG-style alternatives the field actually reaches for.
