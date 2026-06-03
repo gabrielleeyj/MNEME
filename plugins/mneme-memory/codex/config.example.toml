@@ -1,0 +1,55 @@
+# MNEME memory for OpenAI Codex CLI.
+#
+# Codex has no plugin folder like Claude Code; it is configured through
+# ~/.codex/config.toml. Copy the two blocks below into that file (merging with
+# whatever is already there) to get the same behaviour as the Claude Code plugin:
+# the conversation is captured automatically and Codex can recall it via tools.
+#
+# Replace every <MNEME> below with the absolute path to this repository, e.g.
+#   /Users/you/dev/MNEME
+# (the hook scripts and the `python -m mneme.mcp` server both live under it).
+#
+# Prereqs:  pip install -e '<MNEME>[llm,mcp]'   # the mcp + anthropic extras
+# Memory is per-project by default (<cwd>/.mneme/memory.db). Set MNEME_SCOPE=global
+# for one shared store, or MNEME_DB=/path for an explicit file.
+
+# --- Recall: expose MNEME's memory as Codex tools --------------------------------
+# Gives Codex: recall / history / evolution / remember / consolidate / memory_summary.
+[mcp_servers.mneme]
+command = "python"
+args = ["-m", "mneme.mcp"]
+startup_timeout_sec = 20
+
+# --- Capture: record each turn into memory ---------------------------------------
+# UserPromptSubmit records your prompt; Stop records the assistant's reply.
+[[hooks.UserPromptSubmit]]
+
+[[hooks.UserPromptSubmit.hooks]]
+type = "command"
+command = 'python "<MNEME>/plugins/mneme-memory/hooks/capture_prompt.py"'
+timeout = 20
+
+[[hooks.Stop]]
+
+[[hooks.Stop.hooks]]
+type = "command"
+command = 'python "<MNEME>/plugins/mneme-memory/hooks/capture_stop.py"'
+timeout = 30
+
+# --- Recall on start + catch-up consolidation ------------------------------------
+# Folds any un-consolidated turns into facts and injects a summary of what is known
+# so Codex starts the session already remembering earlier ones.
+[[hooks.SessionStart]]
+matcher = "startup|resume"
+
+[[hooks.SessionStart.hooks]]
+type = "command"
+command = 'python "<MNEME>/plugins/mneme-memory/hooks/session_start.py"'
+statusMessage = "Loading MNEME memory"
+timeout = 60
+
+# Note on consolidation: Codex does not run hooks asynchronously yet, so by
+# default the Stop hook consolidates inline every few turns (it spends LLM tokens
+# only when ANTHROPIC_API_KEY is set). To avoid any turn-end latency, set
+# MNEME_CONSOLIDATE_ON_STOP=false in your environment — SessionStart will then do
+# all the consolidation when the next session begins.

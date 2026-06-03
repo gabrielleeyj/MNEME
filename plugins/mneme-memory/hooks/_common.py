@@ -1,13 +1,18 @@
-"""Shared plumbing for the MNEME hook scripts.
+"""Shared plumbing for the MNEME hook scripts (host-agnostic).
 
-Every hook is a short-lived process that Claude Code launches with the event
-payload on stdin. The cardinal rule here is *never break the host session*: a
-hook that raises, or writes garbage to stdout, degrades the user's Claude Code.
-So everything in this module is defensive — failures are swallowed and the hook
-exits 0 with no output. Memory is a nice-to-have; the session is not.
+Every hook is a short-lived process the host launches with the event payload on
+stdin. The same scripts serve Claude Code and Codex, which share a hook event
+model (UserPromptSubmit / Stop / SessionStart), the stdin JSON shape, and the
+``hookSpecificOutput.additionalContext`` stdout contract — they differ only in
+how the Stop turn's reply arrives (see ``assistant_reply``) and whether hooks may
+run async.
 
-The functions stay dependency-light (only stdlib + ``mneme``) and import lazily
-so a machine without MNEME installed simply no-ops instead of crashing.
+The cardinal rule here is *never break the host session*: a hook that raises, or
+writes garbage to stdout, degrades the user's editor. So everything in this
+module is defensive — failures are swallowed and the hook exits 0 with no output.
+Memory is a nice-to-have; the session is not. The functions stay dependency-light
+(only stdlib + ``mneme``) and import lazily so a machine without MNEME installed
+simply no-ops instead of crashing.
 """
 
 from __future__ import annotations
@@ -19,6 +24,8 @@ from typing import Any
 #: Consolidate once this many un-folded turns have piled up (overridable by env).
 DEFAULT_CONSOLIDATE_EVERY = 6
 CONSOLIDATE_EVERY_ENV = "MNEME_CONSOLIDATE_EVERY"
+#: Set falsey to stop the Stop hook consolidating inline (for sync-only hosts).
+STOP_CONSOLIDATION_ENV = "MNEME_CONSOLIDATE_ON_STOP"
 
 
 def read_payload() -> dict[str, Any]:
@@ -72,6 +79,20 @@ def consolidate_every(payload: dict[str, Any]) -> int:
     return DEFAULT_CONSOLIDATE_EVERY
 
 
+def stop_consolidation_enabled() -> bool:
+    """Whether the Stop hook may consolidate inline (default yes).
+
+    Claude Code runs the Stop hook ``async``, so consolidating there costs the
+    user no latency. Codex does not support async hooks yet, so the same call
+    blocks the end of the turn — setting ``MNEME_CONSOLIDATE_ON_STOP`` to a
+    falsey value (0/false/off/no) defers all consolidation to ``SessionStart``.
+    """
+    import os
+
+    raw = os.environ.get(STOP_CONSOLIDATION_ENV, "").strip().lower()
+    return raw not in {"0", "false", "off", "no"}
+
+
 def emit_context(event_name: str, context: str) -> None:
     """Print a hook result that injects ``context`` into Claude's view."""
     if not context.strip():
@@ -83,6 +104,20 @@ def emit_context(event_name: str, context: str) -> None:
         }
     }
     print(json.dumps(payload))
+
+
+def assistant_reply(payload: dict[str, Any]) -> str:
+    """Claude's reply for this turn, however the host delivers it.
+
+    Codex hands the Stop hook the text directly as ``last_assistant_message``;
+    Claude Code instead points at a transcript we read the last text turn from.
+    Prefer the direct field, fall back to the transcript, and return ``""`` when
+    neither yields anything.
+    """
+    direct = payload.get("last_assistant_message")
+    if isinstance(direct, str) and direct.strip():
+        return direct.strip()
+    return last_assistant_text(payload.get("transcript_path"))
 
 
 def last_assistant_text(transcript_path: str | None) -> str:
