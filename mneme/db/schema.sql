@@ -55,3 +55,12 @@ CREATE TABLE IF NOT EXISTS facts (
 CREATE INDEX IF NOT EXISTS idx_facts_subject ON facts(subject);
 CREATE INDEX IF NOT EXISTS idx_facts_current ON facts(subject) WHERE superseded_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_facts_source  ON facts(source_event_id);
+
+-- A tiny key/value table for projection bookkeeping that is NOT itself a fact:
+-- e.g. the incremental-consolidation high-water mark (the last event_id folded
+-- into `facts`). It is derived state — rebuildable like `facts` — so it is not
+-- the source of truth and carries no immutability guarantee.
+CREATE TABLE IF NOT EXISTS meta (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);

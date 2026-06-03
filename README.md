@@ -29,7 +29,7 @@ I am not trying to build "another" graph/vector database with memory features. M
 
 The MVP is a deliberately small Python/SQLite slice of the architecture above: **one append-only log as the source of truth, and a fact projection that is rebuildable from it.** Everything on the scaling list (Merkle DAG, Elias-Fano/learned temporal index, RaBitQ quantization, ATMS) is intentionally deferred until a measured number justifies it.
 
-The MVP exists to settle **one** question: is supersession-based memory worth it at all? The whole project is measured against the **B0 ablation** — the same pipeline with history-preserving supersession swapped for last-write-wins overwrite. A loss to B0 means supersession was never worth the complexity. The ingest spine (WS1→WS2→WS3), the semantic candidate path (WS4), the read side (WS5), the gold dataset (WS7), and the scoring harness that turns them into the B0 number are in. The B0 gate is settled and all three external baselines are in: supersession beats raw RAG (B1) and summary (B2), and ties the faithful bitemporal store (B3) — the tie that keeps the substrate question open at MVP scale.
+The MVP exists to settle **one** question: is supersession-based memory worth it at all? The whole project is measured against the **B0 ablation** — the same pipeline with history-preserving supersession swapped for last-write-wins overwrite. A loss to B0 means supersession was never worth the complexity. The ingest spine (WS1→WS2→WS3), the semantic candidate path (WS4), the read side (WS5), the gold dataset (WS7), and the scoring harness that turns them into the B0 number are in. The B0 gate is settled and all three external baselines are in: supersession beats raw RAG (B1) and summary (B2), and ties the faithful bitemporal store (B3) — the tie that keeps the substrate question open at MVP scale. The engine is also wired into a **Claude Code plugin** (WS8) that captures the conversation automatically and serves memory back to the model.
 
 The B0 gate, run offline against the gold scenarios (`python scripts/eval_harness.py`):
 
@@ -140,11 +140,47 @@ b3-bitemporal  100%     100%     100%        100%
 - `LLMJudge` grades each free-text answer against the gold reference (meaning, not wording), parsed strictly into a boolean. The embedder (B1) and the LLM client are injected, so the suite runs offline with a fake embedder + scripted client; the live numbers come from `scripts/baselines_demo.py` (real embeddings + Anthropic). The free-text baselines' weakness is expected on `historical`/`evolution`, exactly where supersession earns its keep.
 - **B3 bitemporal** (`BitemporalStore`) is the strong baseline, and the odd one out. It is a faithful Graphiti-like store — real bitemporal edges, invalidated in place on contradiction (Graphiti's "expired" edge), history read back by valid-time intervals — so it answers `historical`/`evolution` as well as MNEME does. Because it produces exact structured answers it is scored on the **B0 gate's exact-match path**, not the judge path: driven by the same gold relations as the supersede oracle, offline and deterministic, reported as a third row beside supersede/overwrite. The substrate difference is real: B3 has **no event log behind it** (nothing to `rebuild` from) and links nothing — where MNEME's facts are a rebuildable projection of an append-only log. At this scale the two tie (B3 ≈ supersede, both 100%), and **that tie is the point**: it keeps the substrate question open, since event-sourcing's payoff (auditability, rebuild, scale-consistency) is invisible at ~10 events.
 
+### WS8 — Claude Code plugin: memory that captures itself
+
+The plugin (`plugins/mneme-memory/`) turns the engine above into live memory for Claude Code: it records the conversation as you go and hands the model back what earlier sessions established. It is built on a **two-phase, cost-aware** split — capture is free and always-on; consolidation spends tokens and runs on a threshold — so a keyless machine still captures everything and simply defers extraction.
+
+```mermaid
+flowchart TD
+    subgraph session["Claude Code session"]
+        prompt["UserPromptSubmit hook"]
+        stop["Stop hook · async"]
+        start["SessionStart hook"]
+    end
+
+    prompt -->|"capture user turn (free)"| log[("events<br/>append-only log")]
+    stop -->|"capture assistant turn (free)"| log
+    stop -->|"every N turns: consolidate"| facts[("facts<br/>bitemporal projection")]
+    start -->|"catch-up consolidate"| facts
+    log -->|"extract → judge → supersede"| facts
+    facts -->|"memory_summary → additionalContext"| start
+
+    server["MCP server · python -m mneme.mcp"]
+    facts <--> server
+    server -->|"recall · history · evolution · remember · consolidate"| claude["Claude"]
+    start -->|"inject known facts"| claude
+```
+
+- **Capture (free, no LLM).** `UserPromptSubmit` appends the user's prompt and the async `Stop` hook appends Claude's reply, straight to the event log — `mneme/service/memory.py::capture`. Losing a turn is the only unrecoverable failure, so this half stays cheap and total; it runs with or without a key.
+- **Consolidate (LLM, incremental).** When enough turns have piled up (`MNEME_CONSOLIDATE_EVERY`, default 6) the `Stop` hook folds the un-consolidated tail into facts under the Supersede policy, and `SessionStart` catches up anything left from last session. A **watermark** (`mneme/service/meta.py`) makes this resumable — a crash mid-pass loses no ground and a re-run pays only for unseen turns.
+- **Recall, two ways.** `SessionStart` injects a compact summary of current beliefs as `additionalContext`, so Claude starts already knowing what was established; and the **MCP server** (`python -m mneme.mcp`) exposes the read side as tools — `recall` / `history` / `evolution` / `remember` / `consolidate` / `memory_summary` (`mneme/mcp/`). The tool logic is MCP-free and unit-tested; the server is a thin FastMCP adapter, lazily imported so the package installs without `mcp`.
+- **Scope.** Memory is per-project by default (`<project>/.mneme/memory.db`); set `MNEME_SCOPE=global` for one store that follows you across projects, or `MNEME_DB` to point anywhere — `mneme/service/paths.py`. The store runs in SQLite WAL mode so the long-lived MCP process and the short-lived hooks can share the file.
+- **Never break the session.** Every hook reads JSON on stdin, swallows all failures, and exits 0 with no output if MNEME is missing or the DB cannot be opened — memory is a nice-to-have, the session is not.
+
+```bash
+pip install -e '.[llm,mcp]'                                 # client + MCP server deps
+claude --plugin-dir ./plugins/mneme-memory                  # load the plugin into a session
+```
+
 ### Run it
 
 ```bash
 pip install -e '.[dev,vectors,embeddings]'   # core + tests + FAISS + local embeddings
-pytest                                         # 216 tests, no API key needed
+pytest                                         # 252 tests, no API key needed
 python scripts/eval_harness.py                 # the B0 gate + B3, offline + keyless
 python scripts/generate_dataset.py             # the ~1000-event scale gate, offline + keyless
 

@@ -8,6 +8,7 @@ dependencies = []
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
 llm = ["anthropic>=0.40"]
+mcp = ["mcp>=1.0"]
 vectors = ["faiss-cpu>=1.8", "numpy>=1.26"]
 embeddings = ["fastembed>=0.4"]
 
