@@ -1,9 +1,10 @@
 <p align="center">
   <img src="assets/mneme-logo-outlined.svg" alt="Mneme Logo" width="200">
-> (Μνήμη)
-> is an Ancient Greek word meaning: memory, remembrance, or the faculty of memory.
 </p>
-
+<h3 align="center">
+Μνήμη
+</h3>
+<p align="center">is an Ancient Greek word meaning: memory, remembrance, or the faculty of memory.</p>
 <h2 align="center">A From-First-Principles Architecture for AI Long-Term Memory</h2>
 
 <div>
