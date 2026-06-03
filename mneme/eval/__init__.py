@@ -13,6 +13,12 @@ from mneme.eval.dataset import (
     materialize,
     total_event_count,
 )
+from mneme.eval.generator import (
+    GenConfig,
+    default_config,
+    generate,
+    scale_config,
+)
 from mneme.eval.harness import (
     OVERWRITE,
     SUPERSEDE,
@@ -60,4 +66,8 @@ __all__ = [
     "evaluate",
     "run_gate",
     "format_gate",
+    "GenConfig",
+    "default_config",
+    "scale_config",
+    "generate",
 ]

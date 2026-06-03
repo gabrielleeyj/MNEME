@@ -123,6 +123,14 @@ flowchart LR
 - The gold is simultaneously the **spec for the detector** (each event carries the relation it should be judged as) and the **discriminator for the B0 gate** (its `historical`/`evolution` queries are only answerable by a history-preserving store). `materialize()` renders a scenario into immutable log events.
 - `ScenarioOracleDetector` swaps the LLM judge for the gold relations, so the harness runs offline and **deterministically** — holding extraction and judgment fixed so the only variable between the two systems is the storage policy — `mneme/eval/oracle.py`.
 - The harness ingests each scenario into a fresh in-memory store under Supersede vs Overwrite, runs the router over every gold query, and scores answer accuracy by query kind — `mneme/eval/harness.py`, run via `scripts/eval_harness.py`. The supersede-minus-overwrite gap on `historical`/`evolution` **is** the B0 result above.
+- **The scale dataset** (`mneme/eval/generator.py`): a seeded, fully procedural generator that builds **one long timeline** (~1000 events by default) over ~180 `(subject, predicate)` slots, each with a multi-step belief history buried in heavy chatter. Ground truth is correct *by construction* — the generator knows each slot's history as it builds it, so it emits the gold `current`/`historical`/`evolution` queries directly — and `validate_scenario` runs as an independent check. The toy gold is ~10 events a scenario, small enough that top-k recall pulls the whole timeline and a capable LLM reasons history out unaided; length is the only thing that breaks that, and the only place the substrate thesis can be tested. The offline structured gate over a generated ~1000-event scenario (`python scripts/generate_dataset.py`, keyless) sharpens the B0 gap — overwrite now scores **0% on both `historical` and `evolution`**, since at scale every queried slot has changed:
+
+```
+system         overall  current  historical  evolution
+supersede      100%     100%     100%        100%
+overwrite      38%      100%     0%          0%
+b3-bitemporal  100%     100%     100%        100%
+```
 
 ### WS6 — baselines: B1 raw RAG, B2 summary, B3 bitemporal
 
@@ -136,8 +144,9 @@ flowchart LR
 
 ```bash
 pip install -e '.[dev,vectors,embeddings]'   # core + tests + FAISS + local embeddings
-pytest                                         # 204 tests, no API key needed
+pytest                                         # 216 tests, no API key needed
 python scripts/eval_harness.py                 # the B0 gate + B3, offline + keyless
+python scripts/generate_dataset.py             # the ~1000-event scale gate, offline + keyless
 
 pip install -e '.[llm]'                        # adds the anthropic client
 ANTHROPIC_API_KEY=… python scripts/extract_demo.py     # eyeball extraction
@@ -146,4 +155,4 @@ ANTHROPIC_API_KEY=… python scripts/baselines_demo.py   # B1 raw RAG + B2 summa
 python scripts/semantic_demo.py                        # local embeddings + FAISS, keyless
 ```
 
-**Next:** WS6 is complete — B1 raw RAG, B2 summary, and B3 bitemporal are all in. The MVP gates have all been run: supersession beats overwrite (B0, the decision gate) and the naive free-text baselines (B1/B2), and ties the faithful bitemporal store (B3). The tie against B3 is the expected verdict at MVP scale and is exactly what motivates the deferred scaling work — the only place the substrate thesis can actually be tested is a ~1000-event timeline, where top-k recall and full-context reasoning break down and structural supersession answers in O(1).
+**Next:** WS6 is complete and the **~1000-event scale dataset is now in** (`mneme/eval/generator.py`). The MVP gates have all been run: supersession beats overwrite (B0, the decision gate) and the naive free-text baselines (B1/B2), and ties the faithful bitemporal store (B3). The offline structured gate (supersede/overwrite/B3) already runs at scale and sharpens the B0 gap to 0% on both `historical` and `evolution`. The remaining lever is the **live, keyed B1/B2-at-scale run** — replaying the long timeline through raw RAG and the running summary, where top-k recall can no longer pull the right past message and the summary has compressed superseded states away, while structural supersession answers in O(1). The tie against B3 stays the expected verdict at MVP scale, and is exactly what motivates the deferred substrate work (Merkle DAG, Elias-Fano/learned temporal index, RaBitQ, ATMS), still held back until a measured number justifies it.
