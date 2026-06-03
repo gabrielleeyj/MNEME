@@ -27,7 +27,7 @@ I am not trying to build "another" graph/vector database with memory features. M
 
 The MVP is a deliberately small Python/SQLite slice of the architecture above: **one append-only log as the source of truth, and a fact projection that is rebuildable from it.** Everything on the scaling list (Merkle DAG, Elias-Fano/learned temporal index, RaBitQ quantization, ATMS) is intentionally deferred until a measured number justifies it.
 
-The MVP exists to settle **one** question: is supersession-based memory worth it at all? The whole project is measured against the **B0 ablation** — the same pipeline with history-preserving supersession swapped for last-write-wins overwrite. A loss to B0 means supersession was never worth the complexity. The ingest spine (WS1→WS2→WS3), the semantic candidate path (WS4), the read side (WS5), the gold dataset (WS7), and the scoring harness that turns them into the B0 number are in; the remaining baselines (B1/B2/B3) are next.
+The MVP exists to settle **one** question: is supersession-based memory worth it at all? The whole project is measured against the **B0 ablation** — the same pipeline with history-preserving supersession swapped for last-write-wins overwrite. A loss to B0 means supersession was never worth the complexity. The ingest spine (WS1→WS2→WS3), the semantic candidate path (WS4), the read side (WS5), the gold dataset (WS7), and the scoring harness that turns them into the B0 number are in. The B0 gate is settled; the first external baseline (B1 raw RAG) is in, with B2/B3 next.
 
 The B0 gate, run offline against the gold scenarios (`python scripts/eval_harness.py`):
 
@@ -122,17 +122,24 @@ flowchart LR
 - `ScenarioOracleDetector` swaps the LLM judge for the gold relations, so the harness runs offline and **deterministically** — holding extraction and judgment fixed so the only variable between the two systems is the storage policy — `mneme/eval/oracle.py`.
 - The harness ingests each scenario into a fresh in-memory store under Supersede vs Overwrite, runs the router over every gold query, and scores answer accuracy by query kind — `mneme/eval/harness.py`, run via `scripts/eval_harness.py`. The supersede-minus-overwrite gap on `historical`/`evolution` **is** the B0 result above.
 
+### WS6 — baselines: B1 raw RAG
+
+- B0 (overwrite) is free from WS3 and is scored inside the B0 gate. The other baselines don't share MNEME's structured storage — they answer in free text — so they live in `mneme/baselines/` on their own scoring path: **NL answer + LLM-as-judge**, the standard for free-text memory evals, reported *beside* the exact-match gate rather than merged into it.
+- **B1 raw RAG** (`RawRagBaseline`): embed every message (chatter included), retrieve the top-k nearest for a question, and let the model answer from that raw text alone — no facts, no supersession, no valid-time index. The naive straw man the thesis must beat. Retrieval reuses the WS4 `SemanticIndex`; the answer step is the only model call.
+- `LLMJudge` grades each free-text answer against the gold reference (meaning, not wording), parsed strictly into a boolean. Both the embedder and the LLM client are injected, so the suite runs offline with a fake embedder + scripted client; the live number comes from `scripts/baselines_demo.py` (real embeddings + Anthropic). B1's weakness is expected on `historical`/`evolution`, exactly where supersession earns its keep.
+
 ### Run it
 
 ```bash
 pip install -e '.[dev,vectors,embeddings]'   # core + tests + FAISS + local embeddings
-pytest                                         # 160 tests, no API key needed
+pytest                                         # 178 tests, no API key needed
 python scripts/eval_harness.py                 # the B0 gate, offline + keyless
 
 pip install -e '.[llm]'                        # adds the anthropic client
 ANTHROPIC_API_KEY=… python scripts/extract_demo.py     # eyeball extraction
 ANTHROPIC_API_KEY=… python scripts/supersede_demo.py   # full supersession pipeline
+ANTHROPIC_API_KEY=… python scripts/baselines_demo.py   # B1 raw RAG: NL answer + LLM judge
 python scripts/semantic_demo.py                        # local embeddings + FAISS, keyless
 ```
 
-**Next:** WS6 baselines (B1 raw RAG, B2 summary, B3 Graphiti-like). The B0 gate is settled — supersession beats overwrite outright on the history-dependent queries; the remaining baselines test it against the RAG-style alternatives the field actually reaches for.
+**Next:** the rest of WS6 — B2 summary and B3 Graphiti-like. B1 raw RAG is in; B3 must be a faithful bitemporal store, since a *tie* against it is the verdict that keeps the substrate question open. These test supersession against the RAG-style alternatives the field actually reaches for.
