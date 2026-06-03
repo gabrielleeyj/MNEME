@@ -1,14 +1,15 @@
-"""Score the B1 raw-RAG baseline over the gold scenarios.
+"""Score the RAG-style baselines (B1 raw RAG, B2 summary) over the gold.
 
 For each scenario this ingests *every* message (fact-bearing and chatter alike)
-into a fresh RAG baseline, asks each gold question, and grades the free-text
-answer with the LLM judge. The result mirrors the B0 gate's rollups — overall
-and per query kind — but on the baseline's own scoring path: NL answer + LLM
-judge, not exact match on structured objects. The two paths are reported side by
-side, not merged, so each stays honest about how it was graded.
+into a fresh baseline, asks each gold question, and grades the free-text answer
+with the LLM judge. The result mirrors the B0 gate's rollups — overall and per
+query kind — but on the baselines' own scoring path: NL answer + LLM judge, not
+exact match on structured objects. The two paths are reported side by side, not
+merged, so each stays honest about how it was graded.
 
-Both the embedder and the LLM client are injected: pass real ones (FastEmbed +
-Anthropic) for the live number, or fakes for an offline, deterministic test.
+The embedder (B1 only) and the LLM client are injected: pass real ones
+(FastEmbed + Anthropic) for the live number, or fakes for an offline,
+deterministic test.
 """
 
 from __future__ import annotations
@@ -17,23 +18,27 @@ from dataclasses import dataclass
 
 from mneme.baselines.judge import LLMJudge
 from mneme.baselines.rag import DEFAULT_TOP_K, RawRagBaseline
+from mneme.baselines.summary import SummaryBaseline
 from mneme.embeddings.client import EmbeddingClient
 from mneme.eval.dataset import GOLD_SCENARIOS
-from mneme.eval.scenario import QueryKind, Scenario
+from mneme.eval.scenario import QueryKind, Scenario, ScenarioQuery
 from mneme.eval.validate import validate_all
 from mneme.index.semantic_index import SemanticIndex
 from mneme.llm.client import LLMClient
 
 __all__ = [
     "B1_RAW_RAG",
+    "B2_SUMMARY",
     "BaselineOutcome",
     "BaselineReport",
     "evaluate_rag",
+    "evaluate_summary",
     "format_baselines",
 ]
 
-# The name this baseline is reported under, alongside the B0 gate's systems.
+# The names these baselines are reported under, alongside the B0 gate's systems.
 B1_RAW_RAG = "b1-raw-rag"
+B2_SUMMARY = "b2-summary"
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,6 +99,27 @@ def evaluate_rag(
     return BaselineReport(B1_RAW_RAG, outcomes)
 
 
+def evaluate_summary(
+    client: LLMClient,
+    scenarios: tuple[Scenario, ...] = GOLD_SCENARIOS,
+    *,
+    judge_client: LLMClient | None = None,
+) -> BaselineReport:
+    """Score the running-summary baseline across the scenarios.
+
+    No embedder: B2 keeps no raw messages to retrieve. ``judge_client`` defaults
+    to ``client``, as in the live single-key run.
+    """
+    validate_all(scenarios)
+    judge = LLMJudge(judge_client if judge_client is not None else client)
+    outcomes = tuple(
+        outcome
+        for scenario in scenarios
+        for outcome in _evaluate_summary_scenario(client, judge, scenario)
+    )
+    return BaselineReport(B2_SUMMARY, outcomes)
+
+
 def _evaluate_scenario(
     embedder: EmbeddingClient,
     client: LLMClient,
@@ -107,11 +133,28 @@ def _evaluate_scenario(
     return [_run_query(baseline, judge, scenario, query) for query in scenario.queries]
 
 
-def _run_query(
-    baseline: RawRagBaseline,
+def _evaluate_summary_scenario(
+    client: LLMClient,
     judge: LLMJudge,
     scenario: Scenario,
-    query,
+) -> list[BaselineOutcome]:
+    baseline = SummaryBaseline(client)
+    for event in scenario.events:
+        baseline.ingest(f"[day {event.day}] {event.content}")
+    return [_run_query(baseline, judge, scenario, query) for query in scenario.queries]
+
+
+class _Answerer:
+    """Anything that answers a question from its ingested state (B1/B2)."""
+
+    def answer(self, question: str) -> str: ...  # pragma: no cover - typing only
+
+
+def _run_query(
+    baseline: _Answerer,
+    judge: LLMJudge,
+    scenario: Scenario,
+    query: ScenarioQuery,
 ) -> BaselineOutcome:
     answer = baseline.answer(query.question)
     verdict = judge.judge(query.question, query.answer, answer)
