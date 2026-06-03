@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="100" height="100" fill="none" role="img" aria-label="Mneme">
+  <g stroke="#0E141A" stroke-width="8" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M36 28 V84"></path>
+    <path d="M64 28 V60"></path>
+    <path d="M36 60 Q36 72 50 72 Q64 72 64 60"></path>
+  </g>
+  <circle cx="36" cy="84" r="5" fill="#0E141A"></circle>
+</svg>
