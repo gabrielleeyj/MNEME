@@ -105,3 +105,75 @@ class FakeEmbeddingClient:
 @pytest.fixture
 def fake_embedder():
     return FakeEmbeddingClient()
+
+
+import json as _json
+import re as _re
+
+# Matches a rendered "(subject) -[predicate]-> (object)" edge from the detection
+# prompt; the [valid_from=...] suffix uses square brackets and is ignored.
+_EDGE_RE = _re.compile(r"\(([^)]*)\) -\[([^\]]*)\]-> \(([^)]*)\)")
+
+
+class RoutedLLM:
+    """Offline LLM stub that answers both pipeline prompts deterministically.
+
+    Routes on the system prompt: the extraction prompt opens with "You extract",
+    everything else is treated as detection. Extraction turns recognised
+    substrings of the message into facts; detection declares ``supersedes`` when
+    the candidate shares a subject+predicate with an existing fact but a
+    different object, ``duplicate`` when identical, else ``new``. That is the
+    real supersession behaviour without a network call.
+    """
+
+    def __init__(self, extract_map: dict[str, list[tuple[str, str, str]]]) -> None:
+        self._extract_map = extract_map
+        self.systems: list[str] = []
+
+    def complete(self, *, system: str, user: str, max_tokens: int | None = None) -> str:
+        self.systems.append(system)
+        if system.startswith("You extract"):
+            return self._extract(user)
+        return self._detect(user)
+
+    def _extract(self, user: str) -> str:
+        low = user.lower()
+        facts = [
+            {
+                "subject": subject,
+                "predicate": predicate,
+                "object": obj,
+                "valid_from": "2026-01-01",
+                "confidence": 0.9,
+            }
+            for key, triples in self._extract_map.items()
+            if key in low
+            for subject, predicate, obj in triples
+        ]
+        return _json.dumps({"facts": facts})
+
+    def _detect(self, user: str) -> str:
+        edges = _EDGE_RE.findall(user)
+        if not edges:
+            return _json.dumps({"relation": "new", "target": None, "reason": "none"})
+        cand, existing = edges[0], edges[1:]
+        for index, (subject, predicate, obj) in enumerate(existing):
+            if subject == cand[0] and predicate == cand[1]:
+                if obj == cand[2]:
+                    return _json.dumps(
+                        {"relation": "duplicate", "target": index, "reason": "same"}
+                    )
+                return _json.dumps(
+                    {"relation": "supersedes", "target": index, "reason": "changed"}
+                )
+        return _json.dumps({"relation": "new", "target": None, "reason": "new"})
+
+
+@pytest.fixture
+def routed_llm():
+    """Factory: build a RoutedLLM from an {message_substring: [(s, p, o)]} map."""
+
+    def _make(extract_map: dict[str, list[tuple[str, str, str]]]) -> RoutedLLM:
+        return RoutedLLM(extract_map)
+
+    return _make
