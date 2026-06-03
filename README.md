@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/mneme-logo-outlined.svg" alt="Mneme Logo" width="200">
+  <img src="assets/mneme-logo-outlined-dark.svg" alt="Mneme Logo" width="200">
 </p>
 <h3 align="center">
 Μνήμη
