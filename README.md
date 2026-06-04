@@ -146,9 +146,9 @@ The plugin (`plugins/mneme-memory/`) turns the engine above into live memory for
 
 ```mermaid
 flowchart TD
-    subgraph session["Claude Code session"]
+    subgraph session["agent session · Claude Code or Codex"]
         prompt["UserPromptSubmit hook"]
-        stop["Stop hook · async"]
+        stop["Stop hook"]
         start["SessionStart hook"]
     end
 
@@ -161,8 +161,8 @@ flowchart TD
 
     server["MCP server · python -m mneme.mcp"]
     facts <--> server
-    server -->|"recall · history · evolution · remember · consolidate"| claude["Claude"]
-    start -->|"inject known facts"| claude
+    server -->|"recall · history · evolution · remember · consolidate"| agent["the agent"]
+    start -->|"inject known facts"| agent
 ```
 
 - **Capture (free, no LLM).** `UserPromptSubmit` appends the user's prompt and the `Stop` hook appends the assistant's reply, straight to the event log — `mneme/service/memory.py::capture`. Losing a turn is the only unrecoverable failure, so this half stays cheap and total; it runs with or without a key.
@@ -171,17 +171,55 @@ flowchart TD
 - **Scope.** Memory is per-project by default (`<project>/.mneme/memory.db`); set `MNEME_SCOPE=global` for one store that follows you across projects, or `MNEME_DB` to point anywhere — `mneme/service/paths.py`. The store runs in SQLite WAL mode so the long-lived MCP process and the short-lived hooks can share the file.
 - **Never break the session.** Every hook reads JSON on stdin, swallows all failures, and exits 0 with no output if MNEME is missing or the DB cannot be opened — memory is a nice-to-have, the session is not.
 
-```bash
-pip install -e '.[llm,mcp]'                                 # client + MCP server deps
-claude --plugin-dir ./plugins/mneme-memory                  # load the plugin into a session
-```
+#### Setup
 
-**Codex CLI** gets the same memory from the same code. Codex shares Claude Code's hook model — the `UserPromptSubmit` / `Stop` / `SessionStart` events, the stdin JSON shape, and the `additionalContext` stdout contract — so the three hook scripts and the MCP server are reused as-is; only the registration differs (TOML in `~/.codex/config.toml` instead of a plugin folder). Two host quirks are handled in `hooks/_common.py`: Codex hands the `Stop` hook its reply inline as `last_assistant_message` (so no transcript parsing — `assistant_reply` prefers it), and Codex has no async hooks yet, so `MNEME_CONSOLIDATE_ON_STOP=false` defers consolidation to `SessionStart` to keep turn-ends snappy. Copy the two blocks from `plugins/mneme-memory/codex/config.example.toml` (MCP server + hooks) into your Codex config, replacing `<MNEME>` with this repo's path:
+**1. Install MNEME with the plugin extras** (the `mcp` server + the `anthropic` client). Do this once; both hosts use the same install.
 
 ```bash
-pip install -e '.[llm,mcp]'                                 # same extras
-$EDITOR ~/.codex/config.toml                                # merge in codex/config.example.toml
+git clone https://github.com/gabrielleeyj/MNEME.git
+cd MNEME
+pip install -e '.[llm,mcp]'
 ```
+
+**2. (Optional) Set an API key** so memory consolidates into queryable facts. Without it, MNEME still captures every turn and simply defers extraction until a key is present.
+
+```bash
+export ANTHROPIC_API_KEY=sk-ant-...
+```
+
+**3a. Claude Code** — point Claude Code at the plugin folder. The manifest, hooks, and MCP server are wired up for you.
+
+```bash
+# from the project you want memory in:
+claude --plugin-dir /path/to/MNEME/plugins/mneme-memory
+
+# to load it on every session, symlink it into Claude Code's plugin dir
+# (~/.claude/plugins/ for all projects, or .claude/plugins/ for one project):
+ln -s /path/to/MNEME/plugins/mneme-memory ~/.claude/plugins/mneme-memory
+```
+
+**3b. Codex CLI** — Codex has no plugin folder, so merge the example config into `~/.codex/config.toml`. It registers the same MCP server and the same three hook scripts. Replace `<MNEME>` with the absolute path to this repo (the example file has a copy-paste-ready note at the top):
+
+```bash
+# preview what to merge — two blocks: [mcp_servers.mneme] and the [[hooks.*]] entries
+cat /path/to/MNEME/plugins/mneme-memory/codex/config.example.toml
+
+# append a path-substituted copy to your Codex config (review before/after):
+sed "s|<MNEME>|/path/to/MNEME|g" \
+  /path/to/MNEME/plugins/mneme-memory/codex/config.example.toml >> ~/.codex/config.toml
+```
+
+To skip any turn-end latency on Codex (which has no async hooks yet), also `export MNEME_CONSOLIDATE_ON_STOP=false` — consolidation then happens at the next `SessionStart` instead of inline on `Stop`.
+
+**4. Verify it's working.** Start a session, state a fact ("I'm deploying to Fly.io"), end the session, and start a new one in the same directory — the agent should recall it. You can also check the store directly:
+
+```bash
+ls .mneme/memory.db                            # the per-project store was created
+python -c "from mneme.service.factory import open_service; \
+  print(open_service('.').current_facts())"    # what has been consolidated so far
+```
+
+By default each project gets its own store at `<project>/.mneme/memory.db`. Set `MNEME_SCOPE=global` for one store shared across every project, or `MNEME_DB=/path/to.db` to pin an explicit file. To keep the store out of version control, ignore the whole directory — `.mneme/` — rather than `*.db` alone, since WAL mode also writes `memory.db-wal` and `memory.db-shm` sidecar files.
 
 ### Run it
 
