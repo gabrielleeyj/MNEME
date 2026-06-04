@@ -87,6 +87,65 @@ def test_consolidate_limit_processes_a_prefix(conn, routed_llm):
     assert service.current("alice", "lives_in").objects == ("Berlin",)
 
 
+# --- store_fact (keyless, deterministic) ---------------------------------------
+
+
+def test_store_fact_works_without_a_key(conn):
+    service = MemoryService(conn)  # no llm
+
+    fact = service.store_fact("alice", "lives_in", "Berlin")
+
+    assert fact is not None
+    assert service.current("alice", "lives_in").objects == ("Berlin",)
+
+
+def test_store_fact_supersedes_and_keeps_history(conn):
+    service = MemoryService(conn)
+
+    service.store_fact("alice", "lives_in", "Berlin")
+    service.store_fact("alice", "lives_in", "Lisbon")
+
+    assert service.current("alice", "lives_in").objects == ("Lisbon",)
+    assert service.evolution("alice", "lives_in").objects == ("Berlin", "Lisbon")
+
+
+def test_store_fact_drops_duplicate(conn):
+    service = MemoryService(conn)
+
+    service.store_fact("alice", "lives_in", "Berlin")
+    service.store_fact("alice", "lives_in", "Berlin")
+
+    assert service.evolution("alice", "lives_in").objects == ("Berlin",)
+
+
+def test_store_fact_rejects_blank_components(conn):
+    service = MemoryService(conn)
+
+    assert service.store_fact("  ", "lives_in", "Berlin") is None
+    assert service.store_fact("alice", "", "Berlin") is None
+    assert service.store_fact("alice", "lives_in", "   ") is None
+
+
+def test_pending_messages_excludes_agent_reflections(conn):
+    service = MemoryService(conn)
+    service.capture(Actor.USER, "Alice lives in Berlin")
+    service.store_fact("alice", "lives_in", "Berlin")  # appends a reflection event
+
+    # Only the user message is offered to the agent for extraction.
+    assert service.pending_messages() == [("user", "Alice lives in Berlin")]
+
+
+def test_mark_pending_consolidated_advances_watermark(conn):
+    service = MemoryService(conn)
+    service.capture(Actor.USER, "Alice lives in Berlin")
+    assert service.pending_count() == 1
+
+    service.mark_pending_consolidated()
+
+    assert service.pending_count() == 0
+    assert service.pending_messages() == []
+
+
 def test_bad_extraction_is_skipped_not_fatal(conn):
     class Boom:
         def complete(self, *, system, user, max_tokens=None):

@@ -17,8 +17,11 @@ _INSTRUCTIONS = (
     "MNEME long-term memory for this project. Use `recall` to look up what is "
     "currently believed about someone or something, `history`/`evolution` to see "
     "how a belief changed over time, and `remember` to store a new fact the user "
-    "has stated. Memory is captured automatically from the conversation; these "
-    "tools let you query and add to it deliberately."
+    "has stated. When no API key is set, MNEME cannot extract facts itself: it "
+    "will hand you the conversation turns and ask you to call `remember_fact` "
+    "(subject, predicate, object) with the durable facts you extract. Memory is "
+    "captured automatically from the conversation; these tools let you query and "
+    "add to it deliberately."
 )
 
 
@@ -41,6 +44,19 @@ def build_server(service: MemoryService, *, name: str = "mneme"):
     def remember(text: str) -> str:
         """Store a fact the user has stated, e.g. 'Alice now lives in Lisbon'."""
         return tools.remember(service, text)
+
+    @server.tool()
+    def remember_fact(
+        subject: str, predicate: str, object: str, valid_from: str = ""
+    ) -> str:
+        """Store an extracted fact as a triple (subject, predicate, object).
+
+        Use this after extracting durable facts yourself — e.g. when MNEME asks
+        you to, or when no API key is set so it cannot extract on its own. Use a
+        stable snake_case predicate (lives_in, works_at, prefers). It supersedes
+        any prior value for the slot and keeps the old one as history.
+        """
+        return tools.remember_fact(service, subject, predicate, object, valid_from)
 
     @server.tool()
     def recall(subject: str, predicate: str) -> str:
