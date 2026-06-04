@@ -68,6 +68,42 @@ class Detector(Protocol):
         ...
 
 
+class SlotDetector:
+    """A deterministic, LLM-free judge for already-extracted triples.
+
+    The keyless fallback: when no API key is set, the *host* agent does the
+    prose-to-triple extraction and hands MNEME clean ``(subject, predicate,
+    object)`` facts. With the hard part already done, conflict detection reduces
+    to an exact slot rule, no model required —
+
+      * an existing current fact for the same subject+predicate with the same
+        object is a ``DUPLICATE`` (the belief is already held);
+      * one with a *different* object is a ``SUPERSEDES`` (the slot's value
+        changed), closed out so history is preserved exactly as the LLM path
+        would;
+      * anything else is ``NEW``.
+
+    Supersession keeps at most one current fact per slot, so the first
+    same-slot match is the one to close out. Implements the ``Detector``
+    protocol, so it drops into ``SupersedePolicy`` unchanged.
+    """
+
+    def judge(self, candidate: ExtractedFact, existing: Sequence[Fact]) -> Judgment:
+        same_slot = [f for f in existing if f.predicate == candidate.predicate]
+        for fact in same_slot:
+            if fact.object == candidate.object:
+                return Judgment(
+                    Relation.DUPLICATE, fact.fact_id, "same value already current"
+                )
+        if same_slot:
+            return Judgment(
+                Relation.SUPERSEDES,
+                same_slot[0].fact_id,
+                "new value for an existing subject+predicate slot",
+            )
+        return Judgment(Relation.NEW, None, "no current fact for this slot")
+
+
 class ContradictionDetector:
     def __init__(self, client: LLMClient, *, max_tokens: int | None = None) -> None:
         self._client = client

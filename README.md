@@ -166,8 +166,9 @@ flowchart TD
 ```
 
 - **Capture (free, no LLM).** `UserPromptSubmit` appends the user's prompt and the `Stop` hook appends the assistant's reply, straight to the event log — `mneme/service/memory.py::capture`. Losing a turn is the only unrecoverable failure, so this half stays cheap and total; it runs with or without a key.
-- **Consolidate (LLM, incremental).** When enough turns have piled up (`MNEME_CONSOLIDATE_EVERY`, default 6) the `Stop` hook folds the un-consolidated tail into facts under the Supersede policy, and `SessionStart` catches up anything left from last session. A **watermark** (`mneme/service/meta.py`) makes this resumable — a crash mid-pass loses no ground and a re-run pays only for unseen turns.
-- **Recall, two ways.** `SessionStart` injects a compact summary of current beliefs as `additionalContext`, so Claude starts already knowing what was established; and the **MCP server** (`python -m mneme.mcp`) exposes the read side as tools — `recall` / `history` / `evolution` / `remember` / `consolidate` / `memory_summary` (`mneme/mcp/`). The tool logic is MCP-free and unit-tested; the server is a thin FastMCP adapter, lazily imported so the package installs without `mcp`.
+- **Consolidate (incremental).** When enough turns have piled up (`MNEME_CONSOLIDATE_EVERY`, default 6) the `Stop` hook folds the un-consolidated tail into facts under the Supersede policy, and `SessionStart` catches up anything left from last session. A **watermark** (`mneme/service/meta.py`) makes this resumable — a crash mid-pass loses no ground and a re-run pays only for unseen turns.
+- **No second API key required.** Extraction (prose → triple) is the one step that needs a model. If `ANTHROPIC_API_KEY` is set, MNEME does it directly. If it isn't, the work falls to **the host agent you're already running**: `SessionStart` (and the `consolidate` tool) hand the agent the pending turns and ask it to call `remember_fact(subject, predicate, object)`. Those triples flow through the *same* Supersede machinery via a deterministic, LLM-free `SlotDetector` (`mneme/facts/detector.py`), so history is preserved identically — Claude Code or Codex pays for the extraction with tokens you're already spending, and MNEME needs no key of its own. The keyed path stays available for headless/batch consolidation with no session open.
+- **Recall, two ways.** `SessionStart` injects a compact summary of current beliefs as `additionalContext`, so the agent starts already knowing what was established; and the **MCP server** (`python -m mneme.mcp`) exposes the read/write side as tools — `recall` / `history` / `evolution` / `remember` / `remember_fact` / `consolidate` / `memory_summary` (`mneme/mcp/`). The tool logic is MCP-free and unit-tested; the server is a thin FastMCP adapter, lazily imported so the package installs without `mcp`.
 - **Scope.** Memory is per-project by default (`<project>/.mneme/memory.db`); set `MNEME_SCOPE=global` for one store that follows you across projects, or `MNEME_DB` to point anywhere — `mneme/service/paths.py`. The store runs in SQLite WAL mode so the long-lived MCP process and the short-lived hooks can share the file.
 - **Never break the session.** Every hook reads JSON on stdin, swallows all failures, and exits 0 with no output if MNEME is missing or the DB cannot be opened — memory is a nice-to-have, the session is not.
 
@@ -181,7 +182,7 @@ cd MNEME
 pip install -e '.[llm,mcp]'
 ```
 
-**2. (Optional) Set an API key** so memory consolidates into queryable facts. Without it, MNEME still captures every turn and simply defers extraction until a key is present.
+**2. (Optional) Set an API key.** Memory is fully usable without one — when no key is set, the host agent (Claude Code / Codex) does the fact extraction itself and stores it via `remember_fact`, so recall still works. Set a key only if you want MNEME to extract on its own, including headless/batch consolidation with no session open.
 
 ```bash
 export ANTHROPIC_API_KEY=sk-ant-...

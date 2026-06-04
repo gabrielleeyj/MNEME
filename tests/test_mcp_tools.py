@@ -35,7 +35,46 @@ def test_remember_without_key_defers(conn):
     message = tools.remember(service, "Alice lives in Berlin")
 
     assert "Captured to the log" in message
-    assert "consolidation" in message
+    assert "remember_fact" in message
+
+
+def test_remember_fact_stores_without_key(conn):
+    service = MemoryService(conn)  # no llm
+
+    message = tools.remember_fact(service, "alice", "lives_in", "Berlin")
+
+    assert message == "Stored: alice's lives_in is Berlin."
+    assert tools.recall(service, "alice", "lives_in") == "alice's lives_in is Berlin."
+
+
+def test_remember_fact_requires_all_components(conn):
+    service = MemoryService(conn)
+
+    assert "required" in tools.remember_fact(service, "alice", "lives_in", "  ")
+
+
+def test_remember_fact_rejects_bad_valid_from(conn):
+    service = MemoryService(conn)
+
+    message = tools.remember_fact(service, "alice", "lives_in", "Berlin", "not-a-date")
+
+    assert "Could not parse valid_from" in message
+
+
+def test_consolidate_without_key_hands_turns_to_agent(conn):
+    service = MemoryService(conn)
+    service.capture(Actor.USER, "Alice lives in Berlin")
+
+    message = tools.consolidate(service)
+
+    assert "remember_fact" in message
+    assert "Alice lives in Berlin" in message
+
+
+def test_consolidate_without_key_nothing_pending(conn):
+    service = MemoryService(conn)
+
+    assert tools.consolidate(service) == "Nothing to consolidate: no pending turns."
 
 
 def test_recall_missing_slot(conn):
@@ -73,10 +112,6 @@ def test_consolidate_reports_count(conn, routed_llm):
     assert tools.consolidate(service) == "Consolidated 1 event(s) into memory."
 
 
-def test_consolidate_without_key(conn):
-    service = MemoryService(conn)
-
-    assert tools.consolidate(service) == "Cannot consolidate: no ANTHROPIC_API_KEY is set."
 
 
 def test_memory_summary_lists_facts(conn, routed_llm):

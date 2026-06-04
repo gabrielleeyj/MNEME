@@ -222,6 +222,39 @@ def test_session_start_emits_summary_for_known_facts(tmp_path: Path):
     assert "alice lives_in Lisbon" in context
 
 
+def test_session_start_keyless_hands_pending_turns_to_agent(tmp_path: Path):
+    # No ANTHROPIC_API_KEY -> the agent is asked to extract the pending turns.
+    db = tmp_path / "memory.db"
+    _capture_turn(db, "Alice lives in Berlin")
+
+    result = _run_hook(
+        "session_start.py",
+        {"cwd": str(tmp_path), "source": "startup"},
+        db,
+    )
+
+    assert result.returncode == 0
+    context = json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
+    assert "remember_fact" in context
+    assert "Alice lives in Berlin" in context
+
+    # The turns are watermarked, so a second start does not re-surface them.
+    again = _run_hook(
+        "session_start.py", {"cwd": str(tmp_path), "source": "startup"}, db
+    )
+    assert again.stdout.strip() == ""
+
+
+def _capture_turn(db: Path, text: str) -> None:
+    from mneme.domain.events import Actor
+    from mneme.service.memory import MemoryService
+    from mneme.db import init_db
+
+    conn = init_db(str(db))
+    MemoryService(conn).capture(Actor.USER, text)
+    conn.close()
+
+
 def test_hooks_survive_empty_stdin(tmp_path: Path):
     db = tmp_path / "memory.db"
     for script in ("capture_prompt.py", "capture_stop.py", "session_start.py"):
