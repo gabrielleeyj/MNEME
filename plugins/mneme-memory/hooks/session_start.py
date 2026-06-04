@@ -1,14 +1,17 @@
 #!/usr/bin/env python
 """SessionStart hook: catch up on consolidation, then inject what we remember.
 
-Fires when a Claude Code session begins. Two jobs:
+Fires when a session begins. It hands the agent a compact summary of the current
+beliefs as ``additionalContext`` so it walks in already knowing what earlier
+sessions established — recall without the model having to ask. How the pending
+tail gets folded in depends on whether a key is set:
 
-  1. Fold any turns captured-but-not-consolidated at the end of the last session
-     into facts, so memory reflects everything said so far (best-effort, only
-     when a key is present).
-  2. Hand Claude a compact summary of the current beliefs as ``additionalContext``
-     so it walks into the conversation already knowing what earlier sessions
-     established — recall without the model having to ask.
+  * **With a key**, MNEME consolidates the un-folded turns itself (LLM extract +
+    supersede) before building the summary.
+  * **Without a key**, there is no model to extract with, so the host agent *is*
+    the extractor: the pending turns are handed back as a task to call
+    ``remember_fact`` on, and the watermark advances so they are not re-surfaced
+    every session.
 
 Failures are silent: a session must start whether or not memory is available.
 """
@@ -31,19 +34,41 @@ def main() -> None:
     if service is None:
         return
 
-    _catch_up(service)
+    if service.can_consolidate:
+        _catch_up(service)
+        context = _summary(service)
+    else:
+        context = _keyless_context(service)
 
-    summary = _summary(service)
-    if summary:
-        emit_context(EVENT_NAME, summary)
+    if context:
+        emit_context(EVENT_NAME, context)
 
 
 def _catch_up(service) -> None:
     try:
-        if service.can_consolidate and service.pending_count() > 0:
+        if service.pending_count() > 0:
             service.consolidate()
     except Exception:
         return
+
+
+def _keyless_context(service) -> str:
+    """Known facts plus, if turns are pending, an extraction task for the agent."""
+    try:
+        from mneme.mcp.tools import extraction_request, memory_summary
+
+        parts = []
+        summary = memory_summary(service)
+        if summary:
+            parts.append(summary)
+
+        turns = service.pending_messages()
+        if turns:
+            parts.append(extraction_request(turns))
+            service.mark_pending_consolidated()
+        return "\n\n".join(parts)
+    except Exception:
+        return ""
 
 
 def _summary(service) -> str:

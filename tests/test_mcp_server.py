@@ -14,6 +14,7 @@ from mneme.mcp.server import build_server  # noqa: E402
 
 _EXPECTED_TOOLS = {
     "remember",
+    "remember_fact",
     "recall",
     "history",
     "evolution",

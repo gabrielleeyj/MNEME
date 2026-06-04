@@ -10,6 +10,7 @@ from mneme.facts.detector import (
     DetectionError,
     Detector,
     Relation,
+    SlotDetector,
 )
 
 
@@ -155,3 +156,46 @@ def test_candidate_and_existing_reach_the_prompt():
 def test_contradiction_detector_satisfies_protocol():
     detector = ContradictionDetector(FakeLLMClient('{"relation": "new"}'))
     assert isinstance(detector, Detector)
+
+
+# --- SlotDetector (deterministic, keyless) -------------------------------------
+
+
+def _other(fact_id: int, predicate: str, obj: str) -> Fact:
+    return Fact(
+        fact_id=fact_id,
+        subject="alice",
+        predicate=predicate,
+        object=obj,
+        valid_from=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        ingested_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        source_event_id=1,
+    )
+
+
+def test_slot_detector_new_when_no_facts():
+    judgment = SlotDetector().judge(_candidate(), [])
+    assert judgment.relation is Relation.NEW
+    assert judgment.target_fact_id is None
+
+
+def test_slot_detector_new_when_no_same_predicate():
+    # A fact about the same subject but a different slot is not a conflict.
+    judgment = SlotDetector().judge(_candidate("Lisbon"), [_other(7, "works_at", "Acme")])
+    assert judgment.relation is Relation.NEW
+
+
+def test_slot_detector_duplicate_on_identical_value():
+    judgment = SlotDetector().judge(_candidate("Berlin"), [_fact(3, "Berlin")])
+    assert judgment.relation is Relation.DUPLICATE
+    assert judgment.target_fact_id == 3
+
+
+def test_slot_detector_supersedes_on_changed_value():
+    judgment = SlotDetector().judge(_candidate("Lisbon"), [_fact(5, "Berlin")])
+    assert judgment.relation is Relation.SUPERSEDES
+    assert judgment.target_fact_id == 5
+
+
+def test_slot_detector_satisfies_protocol():
+    assert isinstance(SlotDetector(), Detector)

@@ -21,15 +21,20 @@ from __future__ import annotations
 
 import sqlite3
 import warnings
-from datetime import datetime
+from datetime import datetime, timezone
 
 from mneme.domain.events import Actor, Event, EventType
+from mneme.domain.facts import ExtractedFact, Fact
 from mneme.facts.store import FactStore
 from mneme.llm.client import LLMClient
 from mneme.log.event_log import EventLog
 from mneme.query.router import Answer, QueryRouter
 from mneme.service.meta import get_watermark, set_watermark
-from mneme.service.pipeline import build_extractor, build_supersede_policy
+from mneme.service.pipeline import (
+    build_extractor,
+    build_slot_policy,
+    build_supersede_policy,
+)
 
 __all__ = ["MemoryService", "ConsolidationWarning"]
 
@@ -75,6 +80,69 @@ class MemoryService:
             "SELECT COUNT(*) FROM events WHERE event_id > ?", (watermark,)
         ).fetchone()
         return int(row[0])
+
+    def pending_messages(self) -> list[tuple[str, str]]:
+        """Un-consolidated conversation turns as ``(actor, content)`` pairs.
+
+        The raw material the keyless fallback hands the host agent to extract:
+        only ``message`` turns past the watermark (an agent's own ``reflection``
+        writes are excluded, so it is never asked to re-extract its own facts).
+        """
+        watermark = get_watermark(self._conn)
+        rows = self._conn.execute(
+            "SELECT actor, content FROM events "
+            "WHERE event_id > ? AND type = ? ORDER BY event_id",
+            (watermark, EventType.MESSAGE.value),
+        )
+        return [(row[0], row[1]) for row in rows]
+
+    def mark_pending_consolidated(self) -> None:
+        """Advance the watermark past every captured event.
+
+        Used by the keyless path once the pending turns have been handed to the
+        host agent: best-effort, since the raw events remain in the immutable log
+        and a later keyed pass could re-derive them. Keeps the next session from
+        re-surfacing turns the agent has already been asked to extract.
+        """
+        row = self._conn.execute("SELECT MAX(event_id) FROM events").fetchone()
+        latest = row[0]
+        if latest is not None:
+            set_watermark(self._conn, int(latest))
+
+    # --- store (keyless, deterministic) ---------------------------------------
+
+    def store_fact(
+        self,
+        subject: str,
+        predicate: str,
+        object: str,
+        *,
+        valid_from: datetime | None = None,
+        confidence: float | None = 1.0,
+    ) -> Fact | None:
+        """Write an already-extracted triple, no LLM required.
+
+        The host agent's write hand for keyless mode: it has turned prose into a
+        clean ``(subject, predicate, object)`` triple, so MNEME just records the
+        assertion as a ``reflection`` event (provenance stays in the log) and
+        folds it in under the deterministic Supersede policy — superseding any
+        prior value for the slot and preserving history exactly as the keyed path
+        would. Blank components are rejected at the boundary, returning ``None``.
+        """
+        s, p, o = subject.strip(), predicate.strip(), object.strip()
+        if not s or not p or not o:
+            return None
+
+        source = self._log.append(Actor.ASSISTANT, EventType.REFLECTION, f"{s} {p} {o}")
+        candidate = ExtractedFact(
+            subject=s,
+            predicate=p,
+            object=o,
+            valid_from=valid_from or datetime.now(timezone.utc),
+            confidence=confidence,
+        )
+        build_slot_policy(self._conn).apply(self._store, candidate, source)
+        return self._store.current_for(s, p)
 
     # --- consolidate (LLM) ----------------------------------------------------
 
